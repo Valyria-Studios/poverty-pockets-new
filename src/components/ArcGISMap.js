@@ -160,7 +160,7 @@ const ArcGISMap = () => {
       map: newMap,
       zoom: 10,
       center: [-122.0081095, 37.5371513],
-      popup: { autoOpenEnabled: false },
+      popup: {autoOpenEnabled: true},
     });
 
     setMap(newMap);
