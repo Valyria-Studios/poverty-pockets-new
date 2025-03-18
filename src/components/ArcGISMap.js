@@ -5,35 +5,40 @@ import GeoJSONLayer from "@arcgis/core/layers/GeoJSONLayer";
 import "@arcgis/core/assets/esri/themes/light/main.css";
 import { performSearch } from "../utils/searchUtil";
 import axios from "axios";
+import Papa from "papaparse";
 
-// Helper function using axios to fetch and parse CSV data from the published Google Sheet
+// CSV fetch functions using PapaParse
 async function getSheetData() {
-  const sheetUrl = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTuVsdCcxjO9B4eUn8RornEhC061GRbybSbNlgCEXNuBNTPhPyybN5Yn00kfhmmTAeCmtIZ-hsNrxH4/pub?output=csv';
+  // Poverty CSV
+  const sheetUrl =
+    "https://docs.google.com/spreadsheets/d/e/2PACX-1vTuVsdCcxjO9B4eUn8RornEhC061GRbybSbNlgCEXNuBNTPhPyybN5Yn00kfhmmTAeCmtIZ-hsNrxH4/pub?output=csv";
   try {
     const response = await axios.get(sheetUrl);
-    const text = response.data;
-    const rows = text.split("\n").map((row) => row.split(","));
-    
-    // Use the first row as headers
-    const headers = rows[0].map(header => header.trim());
-    // Convert remaining rows into an array of objects
-    const data = rows
-      .slice(1)
-      .filter(row => row.length > 1)
-      .map((row) => {
-        const record = {};
-        row.forEach((cell, index) => {
-          record[headers[index]] = cell.trim();
-        });
-        return record;
-      });
-    return data;
+    const parsed = Papa.parse(response.data, { header: true, skipEmptyLines: true });
+    console.log("Poverty data loaded:", parsed.data);
+    return parsed.data;
   } catch (error) {
-    console.error("Error fetching CSV data:", error);
+    console.error("Error fetching poverty CSV data:", error);
     return [];
   }
 }
 
+async function getChurchData() {
+  // Church CSV
+  const churchCsvUrl =
+    "https://docs.google.com/spreadsheets/d/e/2PACX-1vQefnw4KOV5sBhvRHI-ptUNjDlBxWSE678iwq8mxuGGTbf2Odgc-w6x_H2UPs1g3cGf9DM9U4rdYNoA/pub?output=csv";
+  try {
+    const response = await axios.get(churchCsvUrl);
+    const parsed = Papa.parse(response.data, { header: true, skipEmptyLines: true });
+    console.log("Church data loaded:", parsed.data);
+    return parsed.data;
+  } catch (error) {
+    console.error("Error fetching Church CSV data:", error);
+    return [];
+  }
+}
+
+// SearchBox component
 const SearchBox = ({
   searchField,
   setSearchField,
@@ -43,14 +48,7 @@ const SearchBox = ({
   selectedLayer,
   searchStatus,
 }) => (
-  <div
-    style={{
-      position: "absolute",
-      bottom: "100px",
-      left: "20px",
-      zIndex: 1000,
-    }}
-  >
+  <div style={{ position: "absolute", bottom: "100px", left: "20px", zIndex: 1000 }}>
     <form
       onSubmit={onSearch}
       style={{
@@ -138,21 +136,22 @@ const ArcGISMap = () => {
   const viewDivRef = useRef(null);
   const [map, setMap] = useState(null);
   const [view, setView] = useState(null);
-  const [selectedLayer, setSelectedLayer] = useState("censusTracts");
+  const [selectedLayer, setSelectedLayer] = useState("censusTracts"); // "censusTracts" or "zipCodes"
   const [searchField, setSearchField] = useState("unselected");
   const [searchValue, setSearchValue] = useState("");
   const geoJsonLayerRef = useRef(null);
   const [layerLoaded, setLayerLoaded] = useState(false);
   const [searchStatus, setSearchStatus] = useState("");
   const [povertyData, setPovertyData] = useState([]);
+  const [churchData, setChurchData] = useState([]);
 
-  // Fetch CSV data from your published Google Sheet using axios
+  // Fetch CSV data on mount
   useEffect(() => {
-    getSheetData()
-      .then((data) => setPovertyData(data))
-      .catch((error) => console.error("Error fetching CSV data:", error));
+    getSheetData().then(setPovertyData).catch(console.error);
+    getChurchData().then(setChurchData).catch(console.error);
   }, []);
 
+  // Create the map and view on mount
   useEffect(() => {
     const newMap = new Map({ basemap: "topo-vector" });
     const mapView = new MapView({
@@ -160,25 +159,95 @@ const ArcGISMap = () => {
       map: newMap,
       zoom: 10,
       center: [-122.0081095, 37.5371513],
-      popup: {autoOpenEnabled: true},
+      popup: { autoOpenEnabled: true },
     });
 
     setMap(newMap);
     setView(mapView);
 
     return () => {
-      if (mapView) mapView.destroy();
+      mapView?.destroy();
     };
   }, []);
 
+  // Load the GeoJSON layer and define the popup template based on selectedLayer
   useEffect(() => {
     if (!map || !view) return;
     map.removeAll();
 
+    // Determine GeoJSON URL based on selected layer
     const geojsonUrl =
       selectedLayer === "censusTracts"
         ? `${process.env.PUBLIC_URL}/bay_area_tracts_geometry.geojson`
         : `${process.env.PUBLIC_URL}/BayAreaZipCodes.geojson`;
+
+    // Define popup template based on layer type
+    const popupTemplate =
+      selectedLayer === "censusTracts"
+        ? {
+            title: "{NAMELSAD}",
+            content: (graphic) => {
+              // Always use a fallback object for attributes
+              const attrs = graphic.attributes || {};
+              // US Census API fields
+              const totalPopulation = attrs.P1_001N || "N/A";
+              const employmentRate = attrs.DP03_0004PE || "N/A";
+              const totalHouseholds = attrs.DP02_0001E || "N/A";
+              const medianHouseholdIncome = attrs.S1901_C01_012E || "N/A";
+              // Additional CSV data from poverty CSV
+              // Using the census tract identifier from attribute "NAME"
+              const tractId = attrs.NAME || "";
+              const record = povertyData.find(
+                (row) =>
+                  row["Census Tract"] &&
+                  row["Census Tract"].trim() === tractId.trim()
+              ) || {};
+              const adoptionStatus = record["Adoption Status"] || "N/A";
+              const adoptedBy = record["Adopted by"] || "N/A";
+              const csvChurches = record["Churches"] || "N/A";
+              const nonProfits = record["Non-Profits"] || "N/A";
+              const localBusiness = record["Local Business"] || "N/A";
+
+              return `
+                <b>Total Population:</b> ${totalPopulation}<br>
+                <b>Employment Rate:</b> ${employmentRate}%<br>
+                <b>Total Households:</b> ${totalHouseholds}<br>
+                <b>Median Household Income:</b> ${medianHouseholdIncome}<br>
+                <b>Adoption Status:</b> ${adoptionStatus}<br>
+                <b>Adopted by:</b> ${adoptedBy}<br>
+                <b>Churches:</b> ${csvChurches}<br>
+                <b>Non-Profits:</b> ${nonProfits}<br>
+                <b>Local Business:</b> ${localBusiness}
+              `;
+            },
+          }
+        : {
+            title: "Zip Code: {ZIP_CODE}",
+            content: (graphic) => {
+              const attrs = graphic.attributes || {};
+              // US Census API fields
+              const totalPopulation = attrs.P1_001N || "N/A";
+              const employmentRate = attrs.DP03_0004PE || "N/A";
+              const totalHouseholds = attrs.DP02_0001E || "N/A";
+              const medianHouseholdIncome = attrs.S1901_C01_012E || "N/A";
+              // Additional CSV data from church CSV
+              const zip = attrs.ZIP_CODE || "";
+              const churchRecord = churchData.find(
+                (row) =>
+                  row["Zip Code"] &&
+                  row["Zip Code"].trim() === zip.trim()
+              ) || {};
+              const churchName = churchRecord["Name"] || "N/A";
+
+              return `
+                <b>Total Population:</b> ${totalPopulation}<br>
+                <b>Employment Rate:</b> ${employmentRate}%<br>
+                <b>Total Households:</b> ${totalHouseholds}<br>
+                <b>Median Household Income:</b> ${medianHouseholdIncome}<br>
+                <b>Churches:</b> ${churchName}
+              `;
+            },
+          };
 
     const geoJsonLayer = new GeoJSONLayer({
       url: geojsonUrl,
@@ -187,73 +256,52 @@ const ArcGISMap = () => {
         type: "simple",
         symbol: {
           type: "simple-fill",
-          color: "rgba(255, 0, 0, 0.3)",
+          color:
+            selectedLayer === "censusTracts"
+              ? "rgba(255, 0, 0, 0.3)"
+              : "rgba(0, 255, 0, 0.3)",
           outline: { color: "black", width: 1 },
         },
       },
-      popupTemplate: {
-        title:
-          selectedLayer === "censusTracts"
-            ? "{NAMELSAD}"
-            : "Zip Code: {ZIP_CODE}",
-        content:
-          selectedLayer === "censusTracts"
-            ? function (feature) {
-                // Use the Census Tract identifier (assumed to be in the NAME attribute)
-                const censusTractId = feature.graphic.attributes.NAME;
-                const record = povertyData.find(
-                  (row) => row["Census Tract"] === censusTractId
-                );
-                console.log(feature.graphic.attributes)
-                return `
-                  <b>Total Population:</b> ${feature.graphic.attributes.P1_001N || "N/A"}<br>
-                  <b>Employment Rate:</b> ${feature.graphic.attributes.DP03_0004PE || "N/A"}%<br>
-                  <b>Adoption Status:</b> ${feature.graphic.attributes.adoption_status || "N/A"}<br>
-                  <b>Poverty Pocket:</b> ${record ? record["Poverty Pocket"] : "N/A"}<br>
-                  <b>Zip Code:</b> ${record ? record["Zip Code"] : "N/A"}<br>
-                  <b>City:</b> ${record ? record["City"] : "N/A"}<br>
-                  <b>Churches:</b> ${record ? record["Churches"] : "N/A"}<br>
-                  <b>Non-Profits:</b> ${record ? record["Non-Profits"] : "N/A"}<br>
-                  <b>Local Business:</b> ${record ? record["Local Bussiness"] : "N/A"}
-                `;
-              }
-            : "<b>Post Office Name:</b> {PO_NAME}<br><b>Total Population:</b> {POPULATION}",
-      },
+      popupTemplate,
     });
 
     geoJsonLayer
       .when(() => {
         geoJsonLayerRef.current = geoJsonLayer;
-        view.goTo(geoJsonLayer.fullExtent);
         setLayerLoaded(true);
+        view.goTo(geoJsonLayer.fullExtent).catch(console.warn);
       })
-      .catch((error) =>
-        console.error("Error loading GeoJSON layer:", error)
-      );
+      .catch((error) => console.error("Error loading GeoJSON layer:", error));
 
     map.add(geoJsonLayer);
 
+    // Use hitTest to open the popup on click
     view.on("click", (event) => {
       view.hitTest(event).then((response) => {
+        console.log("hitTest response:", response.results);
         const result = response.results.find(
-          (res) => res.graphic.layer === geoJsonLayer
+          (res) => res.graphic?.layer === geoJsonLayer
         );
         if (result) {
-          view.popup.open({
-            location: event.mapPoint,
-            features: [result.graphic],
-          });
+          const g = result.graphic;
+          const template = g.popupTemplate || { title: "", content: "No popup template defined." };
+          const content = typeof template.content === "function" ? template.content(g) : template.content;
+          view.popup.title = template.title || "";
+          view.popup.content = content;
+          view.popup.location = event.mapPoint;
+          view.popup.visible = true;
         } else {
-          console.warn("No feature found on click.");
+          console.warn("No feature from the GeoJSON layer was found at this click.");
         }
       });
     });
-  }, [selectedLayer, map, view, povertyData]);
+  }, [selectedLayer, map, view, povertyData, churchData]);
 
+  // Handle search functionality using performSearch utility
   const handleSearch = async (e) => {
     e.preventDefault();
     setSearchStatus("");
-
     if (!geoJsonLayerRef.current) {
       setSearchStatus("Layer is not ready. Please wait and try again.");
       return;
@@ -262,14 +310,12 @@ const ArcGISMap = () => {
       setSearchStatus("Layer is still loading. Please wait and try again.");
       return;
     }
-
     const result = await performSearch({
       view,
       geoJsonLayer: geoJsonLayerRef.current,
       searchField,
       searchValue,
     });
-
     if (!result.success) {
       console.error("Search error:", result.message);
       setSearchStatus(result.message);
@@ -278,6 +324,7 @@ const ArcGISMap = () => {
     }
   };
 
+  // Toggle between census tract view and zip code view
   const toggleLayer = () => {
     setSelectedLayer((prev) =>
       prev === "censusTracts" ? "zipCodes" : "censusTracts"

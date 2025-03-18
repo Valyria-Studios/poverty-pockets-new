@@ -41,9 +41,6 @@ const SearchComponent = ({
                             <option value="DP03_0004PE">Employment Rate</option>
                             <option value="DP02_0001E">Total Households</option>
                             <option value="S1901_C01_012E">Median Household Income</option>
-                            <option value="H1_001N">Total Housing Units</option>
-                            <option value="S1501_C02_015E">Bachelor's Degree or Higher</option>
-                            <option value="S2701_C03_001E">Without Health Care Coverage</option>
                         </>
                     ) : (
                         <>
