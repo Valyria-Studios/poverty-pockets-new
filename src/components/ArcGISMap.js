@@ -153,6 +153,7 @@ const SearchBox = ({
           cursor: "pointer",
           fontWeight: "bold",
         }}
+        disabled={!searchField || !searchValue.trim()}
       >
         Search
       </button>
@@ -171,7 +172,7 @@ const ArcGISMap = () => {
   const [map, setMap] = useState(null);
   const [view, setView] = useState(null);
   const [selectedLayer, setSelectedLayer] = useState("censusTracts"); // "censusTracts" or "zipCodes"
-  const [searchField, setSearchField] = useState("unselected");
+  const [searchField, setSearchField] = useState("");
   const [searchValue, setSearchValue] = useState("");
   const geoJsonLayerRef = useRef(null);
   const [layerLoaded, setLayerLoaded] = useState(false);
@@ -200,11 +201,23 @@ const ArcGISMap = () => {
       map: newMap,
       zoom: 10,
       center: [-122.0081095, 37.5371513],
-      popup: { autoOpenEnabled: true },
+      popup: { 
+        autoOpenEnabled: true,
+        dockEnabled: false,
+        dockOptions: {
+          buttonEnabled: false,
+          breakpoint: false,
+          position: "top-right"
+        }
+      },
     });
 
-    setMap(newMap);
-    setView(mapView);
+    // Once the view is ready, set it up completely
+    mapView.when(() => {
+      console.log("Map view initialized");
+      setMap(newMap);
+      setView(mapView);
+    });
 
     return () => {
       mapView?.destroy();
@@ -412,25 +425,46 @@ const ArcGISMap = () => {
   const handleSearch = async (e) => {
     e.preventDefault();
     setSearchStatus("");
+    
     if (!geoJsonLayerRef.current) {
       setSearchStatus("Layer is not ready. Please wait and try again.");
       return;
     }
+    
     if (!layerLoaded) {
       setSearchStatus("Layer is still loading. Please wait and try again.");
       return;
     }
+    
+    // Validate search inputs
+    if (!searchField) {
+      setSearchStatus("Please select a search field.");
+      return;
+    }
+    
+    if (!searchValue.trim()) {
+      setSearchStatus("Please enter a search value.");
+      return;
+    }
+    
+    console.log("Starting search with field:", searchField, "value:", searchValue);
+    
+    // Perform the search with current popup template functions
     const result = await performSearch({
       view,
       geoJsonLayer: geoJsonLayerRef.current,
       searchField,
       searchValue,
+      setSearchValue, // Pass the setter function to allow clearing the input
     });
+    
     if (!result.success) {
       console.error("Search error:", result.message);
       setSearchStatus(result.message);
     } else {
       console.log("Search completed successfully.");
+      // Clear any error status
+      setSearchStatus("");
     }
   };
 
@@ -439,6 +473,10 @@ const ArcGISMap = () => {
     setSelectedLayer((prev) =>
       prev === "censusTracts" ? "zipCodes" : "censusTracts"
     );
+    // Reset search fields when toggling layers
+    setSearchField("");
+    setSearchValue("");
+    setSearchStatus("");
   };
 
   return (

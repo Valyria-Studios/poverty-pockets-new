@@ -35,6 +35,7 @@ const SearchComponent = ({
                         border: "1px solid #ccc",
                     }}
                 >
+                    <option value="">-- Please select an option --</option>
                     {selectedLayer === "censusTracts" ? (
                         <>
                             <option value="P1_001N">Total Population</option>
@@ -79,6 +80,7 @@ const SearchComponent = ({
                     cursor: "pointer",
                     fontWeight: "bold",
                 }}
+                disabled={!searchField || !searchValue.trim()}
             >
                 Search
             </button>
