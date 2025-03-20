@@ -6,6 +6,7 @@ import "@arcgis/core/assets/esri/themes/light/main.css";
 import { performSearch } from "../utils/searchUtil";
 import axios from "axios";
 import Papa from "papaparse";
+import { fetchCensusTractsData, fetchZipcodeData, enrichGeoJsonWithCensusData } from "../utils/censusDataUtils";
 
 // CSV fetch functions using PapaParse
 async function getSheetData() {
@@ -181,6 +182,9 @@ const ArcGISMap = () => {
   // eslint-disable-next-line no-unused-vars
   const [churchData, setChurchData] = useState([]);
   const [churchesByZip, setChurchesByZip] = useState({});
+  // New state for census data
+  const [censusTractData, setCensusTractData] = useState({});
+  const [zipCodeData, setZipCodeData] = useState({});
 
   // Fetch CSV data on mount
   useEffect(() => {
@@ -191,6 +195,28 @@ const ArcGISMap = () => {
       setChurchesByZip(data.churchesByZip);
       console.log("Church data loaded:", data.rawData.length, "records");
     }).catch(console.error);
+
+    // Fetch census data
+    const apiKey = process.env.REACT_APP_CENSUS_API_KEY;
+    if (apiKey) {
+      // Fetch census tract data
+      fetchCensusTractsData(apiKey)
+        .then(data => {
+          setCensusTractData(data);
+          console.log("Census tract data loaded:", Object.keys(data).length, "records");
+        })
+        .catch(console.error);
+      
+      // Fetch ZIP code data
+      fetchZipcodeData(apiKey)
+        .then(data => {
+          setZipCodeData(data);
+          console.log("ZIP code data loaded:", Object.keys(data).length, "records");
+        })
+        .catch(console.error);
+    } else {
+      console.warn("Census API key not found. Set REACT_APP_CENSUS_API_KEY in your environment.");
+    }
   }, []);
 
   // Create the map and view on mount
@@ -249,7 +275,7 @@ const ArcGISMap = () => {
       <b>Total Population:</b> ${totalPopulation}<br>
       <b>Employment Rate:</b> ${employmentRate}%<br>
       <b>Total Households:</b> ${totalHouseholds}<br>
-      <b>Median Household Income:</b> ${medianHouseholdIncome}<br>
+      <b>Median Household Income:</b> $${medianHouseholdIncome}<br>
       <b>Adoption Status:</b> ${adoptionStatus}<br>
       <b>Adopted by:</b> ${adoptedBy}<br>
       <b>Churches:</b> ${csvChurches}<br>
@@ -301,7 +327,7 @@ const ArcGISMap = () => {
       <b>Total Population:</b> ${totalPopulation}<br>
       <b>Employment Rate:</b> ${employmentRate}%<br>
       <b>Total Households:</b> ${totalHouseholds}<br>
-      <b>Median Household Income:</b> ${medianHouseholdIncome}<br>
+      <b>Median Household Income:</b> $${medianHouseholdIncome}<br>
       <b>ZIP Code:</b> ${zipCode || "N/A"}<br>
       <b>Churches:</b> ${churchNames}
     `;
@@ -322,7 +348,7 @@ const ArcGISMap = () => {
     const popupTemplate =
       selectedLayer === "censusTracts"
         ? {
-            title: "Census Tract: {NAMELSAD}",
+            title: "{NAMELSAD}",
             content: generateCensusTractContent
           }
         : {
@@ -347,9 +373,30 @@ const ArcGISMap = () => {
       popupTemplate,
     });
 
-    // Query all features once layer loads to log ZIP_CODE values for debugging
+    // When layer loads, enrich it with census data and handle the view
     geoJsonLayer.when(() => {
       geoJsonLayerRef.current = geoJsonLayer;
+      
+      // Enrich the GeoJSON layer with census data after it loads
+      const apiKey = process.env.REACT_APP_CENSUS_API_KEY;
+      if (apiKey) {
+        if (selectedLayer === "censusTracts" && Object.keys(censusTractData).length > 0) {
+          // For census tracts, use GEOID field to match with census data
+          enrichGeoJsonWithCensusData(geoJsonLayer, censusTractData, "GEOID")
+            .then(() => {
+              console.log("GeoJSON layer enriched with census tract data");
+            })
+            .catch(console.error);
+        } else if (selectedLayer === "zipCodes" && Object.keys(zipCodeData).length > 0) {
+          // For ZIP codes, use ZIP_CODE field to match with census data
+          enrichGeoJsonWithCensusData(geoJsonLayer, zipCodeData, "ZIP_CODE")
+            .then(() => {
+              console.log("GeoJSON layer enriched with ZIP code data");
+            })
+            .catch(console.error);
+        }
+      }
+      
       setLayerLoaded(true);
       view.goTo(geoJsonLayer.fullExtent).catch(console.warn);
     })
@@ -419,7 +466,7 @@ const ArcGISMap = () => {
         console.error("Error in hitTest:", error);
       });
     });
-  }, [selectedLayer, map, view, generateCensusTractContent, generateZipCodeContent]);
+  }, [selectedLayer, map, view, generateCensusTractContent, generateZipCodeContent, censusTractData, zipCodeData]);
 
   // Handle search functionality using performSearch utility
   const handleSearch = async (e) => {
