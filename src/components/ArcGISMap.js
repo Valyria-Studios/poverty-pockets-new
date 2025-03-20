@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import Map from "@arcgis/core/Map";
 import MapView from "@arcgis/core/views/MapView";
 import GeoJSONLayer from "@arcgis/core/layers/GeoJSONLayer";
@@ -9,7 +9,7 @@ import Papa from "papaparse";
 
 // CSV fetch functions using PapaParse
 async function getSheetData() {
-  // Poverty CSV
+  // Poverty CSV remains unchanged
   const sheetUrl =
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vTuVsdCcxjO9B4eUn8RornEhC061GRbybSbNlgCEXNuBNTPhPyybN5Yn00kfhmmTAeCmtIZ-hsNrxH4/pub?output=csv";
   try {
@@ -24,17 +24,51 @@ async function getSheetData() {
 }
 
 async function getChurchData() {
-  // Church CSV
+  // Updated Church CSV with ?output=csv link
   const churchCsvUrl =
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vQefnw4KOV5sBhvRHI-ptUNjDlBxWSE678iwq8mxuGGTbf2Odgc-w6x_H2UPs1g3cGf9DM9U4rdYNoA/pub?output=csv";
   try {
     const response = await axios.get(churchCsvUrl);
-    const parsed = Papa.parse(response.data, { header: true, skipEmptyLines: true });
-    console.log("Church data loaded:", parsed.data);
-    return parsed.data;
+    const parsed = Papa.parse(response.data, { 
+      header: true, 
+      skipEmptyLines: true,
+      transformHeader: (header) => header.trim() 
+    });
+    
+    // Log the headers to verify we're getting the right columns
+    console.log("Church data headers:", parsed.meta.fields);
+    
+    // Create a map of zip codes to arrays of church names for faster lookups
+    const churchesByZip = {};
+    parsed.data.forEach(church => {
+      const zipCode = church["Zip Code"];
+      const name = church["Name"];
+      
+      if (!zipCode || !name) return;
+      
+      // Convert any zip code to string and normalize it
+      const zipStr = zipCode.toString().trim();
+      
+      if (!churchesByZip[zipStr]) {
+        churchesByZip[zipStr] = [];
+      }
+      
+      churchesByZip[zipStr].push(name);
+    });
+    
+    console.log("Church data organized by ZIP code. Available ZIPs:", Object.keys(churchesByZip));
+    
+    // Return both the raw data and the lookup map
+    return {
+      rawData: parsed.data,
+      churchesByZip: churchesByZip
+    };
   } catch (error) {
     console.error("Error fetching Church CSV data:", error);
-    return [];
+    return {
+      rawData: [],
+      churchesByZip: {}
+    };
   }
 }
 
@@ -143,12 +177,19 @@ const ArcGISMap = () => {
   const [layerLoaded, setLayerLoaded] = useState(false);
   const [searchStatus, setSearchStatus] = useState("");
   const [povertyData, setPovertyData] = useState([]);
+  // eslint-disable-next-line no-unused-vars
   const [churchData, setChurchData] = useState([]);
+  const [churchesByZip, setChurchesByZip] = useState({});
 
   // Fetch CSV data on mount
   useEffect(() => {
     getSheetData().then(setPovertyData).catch(console.error);
-    getChurchData().then(setChurchData).catch(console.error);
+    
+    getChurchData().then(data => {
+      setChurchData(data.rawData);
+      setChurchesByZip(data.churchesByZip);
+      console.log("Church data loaded:", data.rawData.length, "records");
+    }).catch(console.error);
   }, []);
 
   // Create the map and view on mount
@@ -170,6 +211,89 @@ const ArcGISMap = () => {
     };
   }, []);
 
+  // Function to generate content for census tract popups - using useCallback to avoid dependency issues
+  const generateCensusTractContent = useCallback((graphic) => {
+    const attrs = graphic.attributes || {};
+    // US Census API fields
+    const totalPopulation = attrs.P1_001N || "N/A";
+    const employmentRate = attrs.DP03_0004PE || "N/A";
+    const totalHouseholds = attrs.DP02_0001E || "N/A";
+    const medianHouseholdIncome = attrs.S1901_C01_012E || "N/A";
+    // Additional CSV data from poverty CSV using the "NAME" field as the tract identifier
+    const tractId = attrs.NAME || "";
+    const record = povertyData.find(
+      (row) =>
+        row["Census Tract"] &&
+        row["Census Tract"].trim() === tractId.trim()
+    ) || {};
+    const adoptionStatus = record["Adoption Status"] || "N/A";
+    const adoptedBy = record["Adopted by"] || "N/A";
+    const csvChurches = record["Churches"] || "N/A";
+    const nonProfits = record["Non-Profits"] || "N/A";
+    const localBusiness = record["Local Business"] || "N/A";
+
+    return `
+      <b>Total Population:</b> ${totalPopulation}<br>
+      <b>Employment Rate:</b> ${employmentRate}%<br>
+      <b>Total Households:</b> ${totalHouseholds}<br>
+      <b>Median Household Income:</b> ${medianHouseholdIncome}<br>
+      <b>Adoption Status:</b> ${adoptionStatus}<br>
+      <b>Adopted by:</b> ${adoptedBy}<br>
+      <b>Churches:</b> ${csvChurches}<br>
+      <b>Non-Profits:</b> ${nonProfits}<br>
+      <b>Local Business:</b> ${localBusiness}
+    `;
+  }, [povertyData]);
+
+  // Function to generate content for zip code popups - using useCallback to avoid dependency issues
+  const generateZipCodeContent = useCallback((feature) => {
+    // Get all attributes from the feature
+    const attrs = feature.graphic ? feature.graphic.attributes : feature.attributes || {};
+    
+    // Get attributes for the display
+    const totalPopulation = attrs.P1_001N || "N/A";
+    const employmentRate = attrs.DP03_0004PE || "N/A";
+    const totalHouseholds = attrs.DP02_0001E || "N/A";
+    const medianHouseholdIncome = attrs.S1901_C01_012E || "N/A";
+    
+    // Try different ways to get the ZIP code
+    let zipCode = null;
+    if (attrs.ZIP_CODE !== undefined && attrs.ZIP_CODE !== null) {
+      zipCode = attrs.ZIP_CODE.toString().trim();
+    } else if (attrs.ZIP !== undefined && attrs.ZIP !== null) {
+      zipCode = attrs.ZIP.toString().trim();
+    } else if (attrs.ZIPCODE !== undefined && attrs.ZIPCODE !== null) {
+      zipCode = attrs.ZIPCODE.toString().trim();
+    } else {
+      // Try to find any attribute that looks like a ZIP code
+      for (const key in attrs) {
+        if (key.toUpperCase().includes('ZIP') && attrs[key] !== null) {
+          zipCode = attrs[key].toString().trim();
+          console.log(`Found ZIP in alternate field: ${key}=${zipCode}`);
+          break;
+        }
+      }
+    }
+    
+    // Get church names for this ZIP from our precomputed lookup
+    let churchNames = "No churches found";
+    if (zipCode && churchesByZip[zipCode] && churchesByZip[zipCode].length > 0) {
+      churchNames = churchesByZip[zipCode].join(", ");
+      console.log(`Found ${churchesByZip[zipCode].length} churches for ZIP ${zipCode}`);
+    } else {
+      console.log(`No churches found for ZIP ${zipCode}`);
+    }
+
+    return `
+      <b>Total Population:</b> ${totalPopulation}<br>
+      <b>Employment Rate:</b> ${employmentRate}%<br>
+      <b>Total Households:</b> ${totalHouseholds}<br>
+      <b>Median Household Income:</b> ${medianHouseholdIncome}<br>
+      <b>ZIP Code:</b> ${zipCode || "N/A"}<br>
+      <b>Churches:</b> ${churchNames}
+    `;
+  }, [churchesByZip]);
+
   // Load the GeoJSON layer and define the popup template based on selectedLayer
   useEffect(() => {
     if (!map || !view) return;
@@ -185,68 +309,12 @@ const ArcGISMap = () => {
     const popupTemplate =
       selectedLayer === "censusTracts"
         ? {
-            title: "{NAMELSAD}",
-            content: (graphic) => {
-              // Always use a fallback object for attributes
-              const attrs = graphic.attributes || {};
-              // US Census API fields
-              const totalPopulation = attrs.P1_001N || "N/A";
-              const employmentRate = attrs.DP03_0004PE || "N/A";
-              const totalHouseholds = attrs.DP02_0001E || "N/A";
-              const medianHouseholdIncome = attrs.S1901_C01_012E || "N/A";
-              // Additional CSV data from poverty CSV
-              // Using the census tract identifier from attribute "NAME"
-              const tractId = attrs.NAME || "";
-              const record = povertyData.find(
-                (row) =>
-                  row["Census Tract"] &&
-                  row["Census Tract"].trim() === tractId.trim()
-              ) || {};
-              const adoptionStatus = record["Adoption Status"] || "N/A";
-              const adoptedBy = record["Adopted by"] || "N/A";
-              const csvChurches = record["Churches"] || "N/A";
-              const nonProfits = record["Non-Profits"] || "N/A";
-              const localBusiness = record["Local Business"] || "N/A";
-
-              return `
-                <b>Total Population:</b> ${totalPopulation}<br>
-                <b>Employment Rate:</b> ${employmentRate}%<br>
-                <b>Total Households:</b> ${totalHouseholds}<br>
-                <b>Median Household Income:</b> ${medianHouseholdIncome}<br>
-                <b>Adoption Status:</b> ${adoptionStatus}<br>
-                <b>Adopted by:</b> ${adoptedBy}<br>
-                <b>Churches:</b> ${csvChurches}<br>
-                <b>Non-Profits:</b> ${nonProfits}<br>
-                <b>Local Business:</b> ${localBusiness}
-              `;
-            },
+            title: "Census Tract: {NAMELSAD}",
+            content: generateCensusTractContent
           }
         : {
             title: "Zip Code: {ZIP_CODE}",
-            content: (graphic) => {
-              const attrs = graphic.attributes || {};
-              // US Census API fields
-              const totalPopulation = attrs.P1_001N || "N/A";
-              const employmentRate = attrs.DP03_0004PE || "N/A";
-              const totalHouseholds = attrs.DP02_0001E || "N/A";
-              const medianHouseholdIncome = attrs.S1901_C01_012E || "N/A";
-              // Additional CSV data from church CSV
-              const zip = attrs.ZIP_CODE || "";
-              const churchRecord = churchData.find(
-                (row) =>
-                  row["Zip Code"] &&
-                  row["Zip Code"].trim() === zip.trim()
-              ) || {};
-              const churchName = churchRecord["Name"] || "N/A";
-
-              return `
-                <b>Total Population:</b> ${totalPopulation}<br>
-                <b>Employment Rate:</b> ${employmentRate}%<br>
-                <b>Total Households:</b> ${totalHouseholds}<br>
-                <b>Median Household Income:</b> ${medianHouseholdIncome}<br>
-                <b>Churches:</b> ${churchName}
-              `;
-            },
+            content: generateZipCodeContent
           };
 
     const geoJsonLayer = new GeoJSONLayer({
@@ -266,37 +334,79 @@ const ArcGISMap = () => {
       popupTemplate,
     });
 
-    geoJsonLayer
-      .when(() => {
-        geoJsonLayerRef.current = geoJsonLayer;
-        setLayerLoaded(true);
-        view.goTo(geoJsonLayer.fullExtent).catch(console.warn);
-      })
-      .catch((error) => console.error("Error loading GeoJSON layer:", error));
+    // Query all features once layer loads to log ZIP_CODE values for debugging
+    geoJsonLayer.when(() => {
+      geoJsonLayerRef.current = geoJsonLayer;
+      setLayerLoaded(true);
+      view.goTo(geoJsonLayer.fullExtent).catch(console.warn);
+    })
+    .catch((error) => console.error("Error loading GeoJSON layer:", error));
 
     map.add(geoJsonLayer);
 
-    // Use hitTest to open the popup on click
+    // Use hitTest to open the popup on click with customized handling and error protection
     view.on("click", (event) => {
       view.hitTest(event).then((response) => {
-        console.log("hitTest response:", response.results);
         const result = response.results.find(
           (res) => res.graphic?.layer === geoJsonLayer
         );
         if (result) {
           const g = result.graphic;
-          const template = g.popupTemplate || { title: "", content: "No popup template defined." };
-          const content = typeof template.content === "function" ? template.content(g) : template.content;
-          view.popup.title = template.title || "";
-          view.popup.content = content;
-          view.popup.location = event.mapPoint;
-          view.popup.visible = true;
+          console.log("Clicked feature attributes:", g.attributes);
+          
+          try {
+            // Safe popup handling with proper null checks
+            if (!g.popupTemplate) {
+              console.warn("No popupTemplate found on graphic");
+              return;
+            }
+            
+            // Get the popup template title and content safely
+            let title = "";
+            let content = "";
+            
+            // Handle title with template interpolation
+            if (g.popupTemplate.title) {
+              title = g.popupTemplate.title.replace(/\{([^}]+)\}/g, (match, key) => {
+                return g.attributes && g.attributes[key] !== undefined ? g.attributes[key] : "N/A";
+              });
+            }
+            
+            // Handle content based on type with error protection
+            if (typeof g.popupTemplate.content === "function") {
+              try {
+                content = g.popupTemplate.content(g);
+              } catch (error) {
+                console.error("Error executing popup content function:", error);
+                content = "<p>Error generating popup content</p>";
+              }
+            } else if (g.popupTemplate.content) {
+              content = g.popupTemplate.content;
+            } else {
+              content = "<p>No content defined</p>";
+            }
+            
+            // Set popup properties safely
+            view.popup.title = title;
+            view.popup.content = content;
+            view.popup.location = event.mapPoint;
+            view.popup.visible = true;
+          } catch (error) {
+            console.error("Error during popup creation:", error);
+            // Provide a fallback popup if there's an error
+            view.popup.title = "Feature Information";
+            view.popup.content = "Unable to display detailed information for this feature.";
+            view.popup.location = event.mapPoint;
+            view.popup.visible = true;
+          }
         } else {
           console.warn("No feature from the GeoJSON layer was found at this click.");
         }
+      }).catch(error => {
+        console.error("Error in hitTest:", error);
       });
     });
-  }, [selectedLayer, map, view, povertyData, churchData]);
+  }, [selectedLayer, map, view, generateCensusTractContent, generateZipCodeContent]);
 
   // Handle search functionality using performSearch utility
   const handleSearch = async (e) => {
