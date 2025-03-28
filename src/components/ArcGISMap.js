@@ -6,12 +6,11 @@ import "@arcgis/core/assets/esri/themes/light/main.css";
 import { performSearch } from "../utils/searchUtil";
 import axios from "axios";
 import Papa from "papaparse";
-import { fetchCensusTractsData, fetchZipcodeData, enrichGeoJsonWithCensusData } from "../utils/censusDataUtils";
+import { fetchCensusTractsData, fetchZipcodeData, injectCensusDataIntoLayer } from "../utils/censusDataUtils";
 import SearchComponent from "./SearchComponent";
-import PolygonSelection from "./PolygonSelection"; // Import the new PolygonSelection component
+import PolygonSelection from "./PolygonSelection";
 
 // CSV fetch functions using PapaParse
-// ... [Keep all the existing CSV functions] ...
 async function getSheetData() {
   // Poverty CSV remains unchanged
   const sheetUrl =
@@ -180,15 +179,17 @@ const ArcGISMap = () => {
     const localBusiness = record["Local Business"] || "N/A";
 
     return `
-      <b>Total Population:</b> ${totalPopulation}<br>
-      <b>Employment Rate:</b> ${employmentRate}%<br>
-      <b>Total Households:</b> ${totalHouseholds}<br>
-      <b>Median Household Income:</b> $${medianHouseholdIncome}<br>
-      <b>Adoption Status:</b> ${adoptionStatus}<br>
-      <b>Adopted by:</b> ${adoptedBy}<br>
-      <b>Churches:</b> ${csvChurches}<br>
-      <b>Non-Profits:</b> ${nonProfits}<br>
-      <b>Local Business:</b> ${localBusiness}
+      <div style="text-align: left;">
+        <b>Total Population:</b> ${totalPopulation}<br>
+        <b>Employment Rate:</b> ${employmentRate}%<br>
+        <b>Total Households:</b> ${totalHouseholds}<br>
+        <b>Median Household Income:</b> $${medianHouseholdIncome}<br>
+        <b>Adoption Status:</b> ${adoptionStatus}<br>
+        <b>Adopted by:</b> ${adoptedBy}<br>
+        <b>Churches:</b> ${csvChurches}<br>
+        <b>Non-Profits:</b> ${nonProfits}<br>
+        <b>Local Business:</b> ${localBusiness}
+      </div>
     `;
   }, [povertyData]);
 
@@ -232,12 +233,14 @@ const ArcGISMap = () => {
     }
 
     return `
-      <b>Total Population:</b> ${totalPopulation}<br>
-      <b>Employment Rate:</b> ${employmentRate}%<br>
-      <b>Total Households:</b> ${totalHouseholds}<br>
-      <b>Median Household Income:</b> $${medianHouseholdIncome}<br>
-      <b>ZIP Code:</b> ${zipCode || "N/A"}<br>
-      <b>Churches:</b> ${churchNames}
+      <div style="text-align: left;">
+        <b>Total Population:</b> ${totalPopulation}<br>
+        <b>Employment Rate:</b> ${employmentRate}%<br>
+        <b>Total Households:</b> ${totalHouseholds}<br>
+        <b>Median Household Income:</b> $${medianHouseholdIncome}<br>
+        <b>ZIP Code:</b> ${zipCode || "N/A"}<br>
+        <b>Churches:</b> ${churchNames}
+      </div>
     `;
   }, [churchesByZip]);
 
@@ -290,14 +293,14 @@ const ArcGISMap = () => {
       if (apiKey) {
         if (selectedLayer === "censusTracts" && Object.keys(censusTractData).length > 0) {
           // For census tracts, use GEOID field to match with census data
-          enrichGeoJsonWithCensusData(geoJsonLayer, censusTractData, "GEOID")
+          injectCensusDataIntoLayer(geoJsonLayer, censusTractData, false)
             .then(() => {
               console.log("GeoJSON layer enriched with census tract data");
             })
             .catch(console.error);
         } else if (selectedLayer === "zipCodes" && Object.keys(zipCodeData).length > 0) {
           // For ZIP codes, use ZIP_CODE field to match with census data
-          enrichGeoJsonWithCensusData(geoJsonLayer, zipCodeData, "ZIP_CODE")
+          injectCensusDataIntoLayer(geoJsonLayer, zipCodeData, true)
             .then(() => {
               console.log("GeoJSON layer enriched with ZIP code data");
             })
@@ -438,7 +441,7 @@ const ArcGISMap = () => {
     <div style={{ position: "relative", height: "100vh", width: "100vw" }}>
       <div ref={viewDivRef} style={{ height: "100%", width: "100%" }}></div>
       
-      {/* Search Component */}
+      {/* Search Component with Toggle Button */}
       <SearchComponent
         searchField={searchField}
         setSearchField={setSearchField}
@@ -447,6 +450,7 @@ const ArcGISMap = () => {
         onSearch={handleSearch}
         selectedLayer={selectedLayer}
         searchStatus={searchStatus}
+        toggleLayer={toggleLayer}
       />
       
       {/* Polygon Selection Component */}
@@ -457,32 +461,6 @@ const ArcGISMap = () => {
           geoJsonLayer={geoJsonLayerRef.current} 
         />
       )}
-      
-      {/* Layer Toggle Button */}
-      <div
-        style={{
-          position: "absolute",
-          bottom: "20px",
-          right: "20px",
-          zIndex: 1000,
-        }}
-      >
-        <button
-          onClick={toggleLayer}
-          style={{
-            padding: "10px 20px",
-            backgroundColor: "#007BFF",
-            color: "white",
-            border: "none",
-            borderRadius: "5px",
-            cursor: "pointer",
-          }}
-        >
-          {selectedLayer === "censusTracts"
-            ? "Switch to Zip Code View"
-            : "Switch to Census Tract View"}
-        </button>
-      </div>
     </div>
   );
 };

@@ -8,6 +8,7 @@ const SearchComponent = ({
     onSearch,
     selectedLayer,
     searchStatus,
+    toggleLayer
 }) => (
     <div style={{ position: "absolute", bottom: "100px", left: "20px", zIndex: 1000 }}>
         <form
@@ -79,10 +80,30 @@ const SearchComponent = ({
                     borderRadius: "5px",
                     cursor: "pointer",
                     fontWeight: "bold",
+                    marginBottom: "15px"
                 }}
                 disabled={!searchField || !searchValue.trim()}
             >
                 Search
+            </button>
+
+            {/* Layer Toggle Button */}
+            <button
+                type="button"
+                onClick={toggleLayer}
+                style={{
+                    padding: "10px",
+                    backgroundColor: "#6c757d",
+                    color: "white",
+                    border: "none",
+                    borderRadius: "5px",
+                    cursor: "pointer",
+                    fontWeight: "bold",
+                }}
+            >
+                {selectedLayer === "censusTracts"
+                    ? "Switch to Zip Code View"
+                    : "Switch to Census Tract View"}
             </button>
 
             {searchStatus && (

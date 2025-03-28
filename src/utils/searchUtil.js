@@ -47,7 +47,7 @@ export const performSearch = async ({
         ? geometry
         : geometry.extent?.center || geometry;
     
-    console.log("Match found, zooming to location", location);
+    console.log("Match found, zooming to location");
     
     // First, zoom to the location 
     if (geometry.type === "point") {
@@ -97,7 +97,7 @@ export const performSearch = async ({
       view.popup.location = location;
       view.popup.visible = true;
       
-      console.log("Popup content set:", { title, contentLength: content?.length, content: content || 0 });
+      console.log("Popup content set:", { title, contentLength: content?.length || 0 });
     } catch (popupError) {
       console.error("Error setting popup properties:", popupError);
     }
@@ -115,13 +115,6 @@ export const performSearch = async ({
         buttonTitle = `Zip Code: ${zipCode}`;
       } else if (match.attributes.NAMELSAD) {
         buttonTitle = `Census Tract: ${match.attributes.NAMELSAD}`;
-      }
-      
-      // Get church information if available
-      let churchCount = 0;
-      if (zipCode && match.attributes.POPULATION) {
-        console.log(`Found churches for ZIP ${zipCode}`);
-        churchCount = 5; // Assuming this is what your content function would find
       }
       
       // Create a container for the buttons
@@ -146,7 +139,7 @@ export const performSearch = async ({
       viewDetailsButton.style.boxShadow = "0 2px 5px rgba(0, 0, 0, 0.2)";
       viewDetailsButton.style.textAlign = "center";
       viewDetailsButton.style.fontWeight = "bold";
-      viewDetailsButton.innerHTML = `View Details: ${buttonTitle} (${churchCount} churches)`;
+      viewDetailsButton.innerHTML = `View Details: ${buttonTitle}`;
       
       // Create the Clear Search button
       const clearButton = document.createElement("div");
@@ -206,6 +199,7 @@ export const performSearch = async ({
                 infoWindow.style.maxWidth = "400px";
                 infoWindow.style.maxHeight = "80vh";
                 infoWindow.style.overflow = "auto";
+                infoWindow.style.textAlign = "left";
                 
                 // Add a close button
                 const closeButton = document.createElement("button");

@@ -1,12 +1,9 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import GraphicsLayer from "@arcgis/core/layers/GraphicsLayer";
 import Graphic from "@arcgis/core/Graphic";
 import SimpleFillSymbol from "@arcgis/core/symbols/SimpleFillSymbol";
 import SimpleLineSymbol from "@arcgis/core/symbols/SimpleLineSymbol";
 import Color from "@arcgis/core/Color";
-import * as geometryEngine from "@arcgis/core/geometry/geometryEngine";
-import { jsPDF } from "jspdf";
-import 'jspdf-autotable';
 
 // Define the symbols for selected and unselected features
 const SELECTED_SYMBOL = new SimpleFillSymbol({
@@ -23,42 +20,26 @@ const PolygonSelection = ({ map, view, geoJsonLayer }) => {
   const selectionLayerRef = useRef(null);
   const [isSelecting, setIsSelecting] = useState(false);
   
-  // Initialize the selection layer when the map is ready
-  useEffect(() => {
-    if (!map) return;
+  // Update the graphics in the selection layer
+  const updateSelectionGraphics = useCallback((features) => {
+    if (!selectionLayerRef.current) return;
     
-    // Create a graphics layer for selections
-    const selectionLayer = new GraphicsLayer({
-      id: "selectionLayer",
-      title: "Selected Features"
+    // Clear existing graphics
+    selectionLayerRef.current.removeAll();
+    
+    // Add new graphics for each selected feature
+    features.forEach(feature => {
+      const selectionGraphic = new Graphic({
+        geometry: feature.geometry,
+        symbol: SELECTED_SYMBOL
+      });
+      
+      selectionLayerRef.current.add(selectionGraphic);
     });
-    
-    map.add(selectionLayer);
-    selectionLayerRef.current = selectionLayer;
-    
-    // Cleanup function to remove the layer when unmounting
-    return () => {
-      if (map && selectionLayer) {
-        map.remove(selectionLayer);
-      }
-    };
-  }, [map]);
-  
-  // Set up the click handler when selection mode is active
-  useEffect(() => {
-    if (!view || !selectionMode) return;
-    
-    const clickHandler = view.on("click", handleMapClick);
-    
-    return () => {
-      if (clickHandler) {
-        clickHandler.remove();
-      }
-    };
-  }, [view, selectionMode, selectedFeatures]);
+  }, []);
   
   // Handle map clicks for selection
-  const handleMapClick = async (event) => {
+  const handleMapClick = useCallback(async (event) => {
     if (!selectionMode || !geoJsonLayer || isSelecting) return;
     
     try {
@@ -102,25 +83,41 @@ const PolygonSelection = ({ map, view, geoJsonLayer }) => {
     } finally {
       setIsSelecting(false);
     }
-  };
+  }, [selectionMode, geoJsonLayer, isSelecting, selectedFeatures, updateSelectionGraphics, view]);
   
-  // Update the graphics in the selection layer
-  const updateSelectionGraphics = (features) => {
-    if (!selectionLayerRef.current) return;
+  // Initialize the selection layer when the map is ready
+  useEffect(() => {
+    if (!map) return;
     
-    // Clear existing graphics
-    selectionLayerRef.current.removeAll();
-    
-    // Add new graphics for each selected feature
-    features.forEach(feature => {
-      const selectionGraphic = new Graphic({
-        geometry: feature.geometry,
-        symbol: SELECTED_SYMBOL
-      });
-      
-      selectionLayerRef.current.add(selectionGraphic);
+    // Create a graphics layer for selections
+    const selectionLayer = new GraphicsLayer({
+      id: "selectionLayer",
+      title: "Selected Features"
     });
-  };
+    
+    map.add(selectionLayer);
+    selectionLayerRef.current = selectionLayer;
+    
+    // Cleanup function to remove the layer when unmounting
+    return () => {
+      if (map && selectionLayer) {
+        map.remove(selectionLayer);
+      }
+    };
+  }, [map]);
+  
+  // Set up the click handler when selection mode is active
+  useEffect(() => {
+    if (!view || !selectionMode) return;
+    
+    const clickHandler = view.on("click", handleMapClick);
+    
+    return () => {
+      if (clickHandler) {
+        clickHandler.remove();
+      }
+    };
+  }, [view, selectionMode, handleMapClick]);
   
   // Toggle selection mode
   const toggleSelectionMode = () => {
@@ -147,26 +144,55 @@ const PolygonSelection = ({ map, view, geoJsonLayer }) => {
       alert("Please select at least one feature to generate a report.");
       return;
     }
-    
+
     try {
-      // Create a new PDF document
-      const doc = new jsPDF();
+      // Create a popup window with HTML content for report data
+      const reportWindow = window.open('', '_blank', 'width=800,height=600');
       
-      // Add title
-      doc.setFontSize(18);
-      doc.text("Selected Features Report", 14, 22);
+      if (!reportWindow) {
+        alert("Popup blocked! Please allow popups for this site to generate reports.");
+        return;
+      }
       
-      // Add date
-      const date = new Date().toLocaleDateString();
-      doc.setFontSize(10);
-      doc.text(`Generated on: ${date}`, 14, 30);
+      // Start building HTML content
+      let htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>Selected Features Report</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            h1 { color: #2c3e50; }
+            h2 { color: #3498db; margin-top: 20px; }
+            .summary { background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+            table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { background-color: #f2f2f2; }
+            tr:nth-child(even) { background-color: #f9f9f9; }
+            .print-button { background-color: #4CAF50; color: white; padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; }
+            @media print { .print-button { display: none; } }
+          </style>
+        </head>
+        <body>
+          <button class="print-button" onclick="window.print()">Print Report</button>
+          <h1>Selected Features Report</h1>
+          <div class="summary">
+            <p><strong>Generated on:</strong> ${new Date().toLocaleString()}</p>
+            <p><strong>Number of features selected:</strong> ${selectedFeatures.length}</p>
+          </div>
+      `;
       
-      // Add summary
-      doc.setFontSize(12);
-      doc.text(`Number of features selected: ${selectedFeatures.length}`, 14, 40);
-      
-      // Prepare data for the table
-      const tableData = [];
+      // Add summary table
+      htmlContent += `
+        <h2>Summary of Selected Features</h2>
+        <table>
+          <tr>
+            <th>Feature</th>
+            <th>Population</th>
+            <th>Employment Rate</th>
+            <th>Median Income</th>
+          </tr>
+      `;
       
       // Collect all unique attribute keys across selected features
       const allKeys = new Set();
@@ -178,63 +204,54 @@ const PolygonSelection = ({ map, view, geoJsonLayer }) => {
         });
       });
       
-      // Process each feature for the report
+      // Add rows for each feature in the summary table
       selectedFeatures.forEach((feature, index) => {
-        // Feature name or identifier
-        let featureName = feature.attributes.NAME || 
+        const featureName = feature.attributes.NAME || 
                           feature.attributes.NAMELSAD || 
                           feature.attributes.ZIP_CODE || 
                           `Feature ${index + 1}`;
-                          
-        // For detailed feature report in jsPDF
-        doc.setFontSize(14);
-        doc.text(`Feature: ${featureName}`, 14, 50 + index * 120);
         
-        // Create a details table for this feature
-        const featureData = [];
+        htmlContent += `
+          <tr>
+            <td>${featureName}</td>
+            <td>${feature.attributes.P1_001N || 'N/A'}</td>
+            <td>${feature.attributes.DP03_0004PE ? `${feature.attributes.DP03_0004PE}%` : 'N/A'}</td>
+            <td>${feature.attributes.S1901_C01_012E ? `$${feature.attributes.S1901_C01_012E}` : 'N/A'}</td>
+          </tr>
+        `;
+      });
+      
+      htmlContent += `</table>`;
+      
+      // Add detailed sections for each feature
+      selectedFeatures.forEach((feature, index) => {
+        const featureName = feature.attributes.NAME || 
+                          feature.attributes.NAMELSAD || 
+                          feature.attributes.ZIP_CODE || 
+                          `Feature ${index + 1}`;
+        
+        htmlContent += `<h2>Details for: ${featureName}</h2>`;
+        htmlContent += `<table><tr><th>Attribute</th><th>Value</th></tr>`;
         
         // Add rows for each attribute
         Array.from(allKeys).forEach(key => {
           if (feature.attributes[key] !== undefined && feature.attributes[key] !== null) {
-            featureData.push([key, String(feature.attributes[key])]);
+            htmlContent += `<tr><td>${key}</td><td>${feature.attributes[key]}</td></tr>`;
           }
         });
         
-        // Add the table to the PDF
-        doc.autoTable({
-          startY: 55 + index * 120,
-          head: [['Attribute', 'Value']],
-          body: featureData,
-          margin: { top: 10 },
-          styles: { overflow: 'linebreak' },
-          columnStyles: {
-            0: { cellWidth: 60 },
-            1: { cellWidth: 100 }
-          }
-        });
-        
-        // For summary table at the beginning
-        tableData.push([
-          featureName,
-          feature.attributes.P1_001N || 'N/A', // Population
-          feature.attributes.DP03_0004PE ? `${feature.attributes.DP03_0004PE}%` : 'N/A', // Employment Rate
-          feature.attributes.S1901_C01_012E ? `$${feature.attributes.S1901_C01_012E}` : 'N/A' // Median Income
-        ]);
+        htmlContent += `</table>`;
       });
       
-      // Add a summary table at the beginning
-      doc.setFontSize(12);
-      doc.text("Summary of Selected Features", 14, 50);
+      // Close HTML content
+      htmlContent += `
+          </body>
+        </html>
+      `;
       
-      doc.autoTable({
-        startY: 55,
-        head: [['Feature', 'Population', 'Employment Rate', 'Median Income']],
-        body: tableData,
-        margin: { top: 10 }
-      });
-      
-      // Save the PDF
-      doc.save("SelectedFeaturesReport.pdf");
+      // Write content to the window
+      reportWindow.document.write(htmlContent);
+      reportWindow.document.close();
       
     } catch (error) {
       console.error("Error generating report:", error);
