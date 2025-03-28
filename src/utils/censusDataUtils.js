@@ -5,9 +5,96 @@ import axios from "axios";
 const CENSUS_API_BASE = "https://api.census.gov/data";
 
 /**
+ * Normalize a Census Tract GEOID to ensure consistent format.
+ * @param {string} geoid - The GEOID to normalize
+ * @returns {string} Normalized GEOID
+ */
+export function normalizeTractGeoid(geoid) {
+  if (!geoid) return null;
+  
+  // Convert to string in case it's a number
+  let normalizedGeoid = String(geoid);
+  
+  // Remove any non-numeric characters (like decimal points)
+  normalizedGeoid = normalizedGeoid.replace(/\D/g, '');
+  
+  // Remove '14000US' prefix if present
+  if (normalizedGeoid.startsWith('14000')) {
+    normalizedGeoid = normalizedGeoid.substring(5);
+  }
+  
+  // Ensure it's 11 digits (standard format for tract GEOIDs)
+  // If shorter, pad with leading zeros
+  while (normalizedGeoid.length < 11) {
+    normalizedGeoid = '0' + normalizedGeoid;
+  }
+  
+  // If longer than 11 digits, truncate to the first 11
+  if (normalizedGeoid.length > 11) {
+    normalizedGeoid = normalizedGeoid.substring(0, 11);
+  }
+  
+  return normalizedGeoid;
+}
+
+/**
+ * Normalize a ZIP code to ensure consistent format.
+ * @param {string|number} zipCode - The ZIP code to normalize
+ * @returns {string} Normalized ZIP code
+ */
+export function normalizeZipCode(zipCode) {
+  if (!zipCode) return null;
+  
+  // Convert to string in case it's a number
+  let normalizedZip = String(zipCode);
+  
+  // Remove any non-numeric characters
+  normalizedZip = normalizedZip.replace(/\D/g, '');
+  
+  // Standard ZIP codes are 5 digits, ensure it's 5 digits
+  while (normalizedZip.length < 5) {
+    normalizedZip = '0' + normalizedZip;
+  }
+  
+  // Take only the first 5 digits if it's a ZIP+4
+  if (normalizedZip.length > 5) {
+    normalizedZip = normalizedZip.substring(0, 5);
+  }
+  
+  return normalizedZip;
+}
+
+/**
+ * Process census data to ensure consistent key format
+ * @param {Object} censusData - Raw census data object
+ * @param {Function} normalizeFunction - Function to normalize keys
+ * @returns {Object} Processed census data with normalized keys
+ */
+function processCensusData(censusData, normalizeFunction) {
+  const processed = {};
+  
+  // Iterate through all keys in the original data
+  Object.keys(censusData).forEach(key => {
+    // Normalize the key
+    const normalizedKey = normalizeFunction(key);
+    if (normalizedKey) {
+      // Add the data under the normalized key
+      processed[normalizedKey] = censusData[key];
+      
+      // If the normalized key is different from the original,
+      // also keep the data under the original key for flexibility
+      if (normalizedKey !== key) {
+        processed[key] = censusData[key];
+      }
+    }
+  });
+  
+  return processed;
+}
+
+/**
  * Fetches census data for multiple census tracts in batch
  * @param {string} apiKey - Census API key
- * @param {Array} geoids - Array of GEOIDs for census tracts (format: "STATE+COUNTY+TRACT")
  * @returns {Promise<Object>} - Promise resolving to a map of GEOIDs to census data
  */
 export const fetchCensusTractsData = async (apiKey) => {
@@ -17,8 +104,7 @@ export const fetchCensusTractsData = async (apiKey) => {
   }
 
   try {
-    // Fetch key data points for all census tracts in California
-    // We'll filter to Bay Area later when joining with GeoJSON
+    console.log("Fetching Census tract data...");
     
     // Population count (Total Population) - from P1 dataset
     const populationUrl = `${CENSUS_API_BASE}/2020/dec/pl?get=P1_001N&for=tract:*&in=state:06&key=${apiKey}`;
@@ -31,11 +117,14 @@ export const fetchCensusTractsData = async (apiKey) => {
     const incomeUrl = `${CENSUS_API_BASE}/2021/acs/acs5/subject?get=S1901_C01_012E&for=tract:*&in=state:06&key=${apiKey}`;
     
     // Parallel requests to improve performance
+    console.log("Sending Census API requests...");
     const [populationRes, acsRes, incomeRes] = await Promise.all([
       axios.get(populationUrl),
       axios.get(acsUrl),
       axios.get(incomeUrl)
     ]);
+    
+    console.log("Received Census API responses, processing data...");
     
     // Process population data
     const populationData = {};
@@ -50,11 +139,13 @@ export const fetchCensusTractsData = async (apiKey) => {
       // Process rows (skip header row)
       for (let i = 1; i < populationRes.data.length; i++) {
         const row = populationRes.data[i];
-        // Create GEOID in same format as GeoJSON: STATE+COUNTY+TRACT
-        const geoid = row[stateIdx] + row[countyIdx] + row[tractIdx];
-        populationData[geoid] = {
-          P1_001N: row[p1001nIdx]
-        };
+        if (row && row.length === popHeaders.length) {
+          // Create GEOID in same format as GeoJSON: STATE+COUNTY+TRACT
+          const geoid = row[stateIdx] + row[countyIdx] + row[tractIdx];
+          populationData[geoid] = {
+            P1_001N: row[p1001nIdx]
+          };
+        }
       }
     }
     
@@ -72,11 +163,13 @@ export const fetchCensusTractsData = async (apiKey) => {
       // Process rows (skip header row)
       for (let i = 1; i < acsRes.data.length; i++) {
         const row = acsRes.data[i];
-        const geoid = row[stateIdx] + row[countyIdx] + row[tractIdx];
-        acsData[geoid] = {
-          DP03_0004PE: row[empRateIdx],
-          DP02_0001E: row[householdsIdx]
-        };
+        if (row && row.length === acsHeaders.length) {
+          const geoid = row[stateIdx] + row[countyIdx] + row[tractIdx];
+          acsData[geoid] = {
+            DP03_0004PE: row[empRateIdx],
+            DP02_0001E: row[householdsIdx]
+          };
+        }
       }
     }
     
@@ -93,27 +186,48 @@ export const fetchCensusTractsData = async (apiKey) => {
       // Process rows (skip header row)
       for (let i = 1; i < incomeRes.data.length; i++) {
         const row = incomeRes.data[i];
-        const geoid = row[stateIdx] + row[countyIdx] + row[tractIdx];
-        incomeData[geoid] = {
-          S1901_C01_012E: row[incomeIdx]
-        };
+        if (row && row.length === incHeaders.length) {
+          const geoid = row[stateIdx] + row[countyIdx] + row[tractIdx];
+          incomeData[geoid] = {
+            S1901_C01_012E: row[incomeIdx]
+          };
+        }
       }
     }
     
     // Merge all datasets
     const mergedData = {};
     
-    // Use the population data keys as base
-    Object.keys(populationData).forEach(geoid => {
+    // Create a set of all GEOIDs from all datasets
+    const allGeoids = new Set([
+      ...Object.keys(populationData),
+      ...Object.keys(acsData),
+      ...Object.keys(incomeData)
+    ]);
+    
+    // Merge data for each GEOID
+    allGeoids.forEach(geoid => {
       mergedData[geoid] = {
-        ...populationData[geoid],
+        ...(populationData[geoid] || {}),
         ...(acsData[geoid] || {}),
         ...(incomeData[geoid] || {})
       };
     });
     
-    console.log(`Fetched census data for ${Object.keys(mergedData).length} census tracts`);
-    return mergedData;
+    console.log(`Raw census data fetched for ${Object.keys(mergedData).length} census tracts`);
+    
+    // Process the data to ensure consistent key format
+    const processedData = processCensusData(mergedData, normalizeTractGeoid);
+    
+    console.log(`Processed census data for ${Object.keys(processedData).length} census tracts`);
+    
+    // Log a sample of the data
+    const sampleKeys = Object.keys(processedData).slice(0, 3);
+    sampleKeys.forEach(key => {
+      console.log(`Sample data for GEOID ${key}:`, processedData[key]);
+    });
+    
+    return processedData;
     
   } catch (error) {
     console.error("Error fetching census data:", error);
@@ -123,7 +237,6 @@ export const fetchCensusTractsData = async (apiKey) => {
 
 /**
  * Fetches ZIP Code Tabulation Area (ZCTA) data from the Census API
- * Note: The Census API uses ZCTAs which are almost the same as ZIP codes
  * @param {string} apiKey - Census API key
  * @returns {Promise<Object>} - Promise resolving to a map of ZIP codes to census data
  */
@@ -134,6 +247,8 @@ export const fetchZipcodeData = async (apiKey) => {
   }
 
   try {
+    console.log("Fetching ZIP code data...");
+    
     // Population count (Total Population)
     const populationUrl = `${CENSUS_API_BASE}/2020/dec/pl?get=P1_001N&for=zip%20code%20tabulation%20area:*&key=${apiKey}`;
     
@@ -142,11 +257,14 @@ export const fetchZipcodeData = async (apiKey) => {
     const incomeUrl = `${CENSUS_API_BASE}/2021/acs/acs5/subject?get=S1901_C01_012E&for=zip%20code%20tabulation%20area:*&key=${apiKey}`;
     
     // Parallel requests
+    console.log("Sending ZIP code data requests...");
     const [populationRes, acsRes, incomeRes] = await Promise.all([
       axios.get(populationUrl),
       axios.get(acsUrl),
       axios.get(incomeUrl)
     ]);
+    
+    console.log("Received ZIP code API responses, processing data...");
     
     // Process population data
     const populationData = {};
@@ -157,10 +275,12 @@ export const fetchZipcodeData = async (apiKey) => {
       
       for (let i = 1; i < populationRes.data.length; i++) {
         const row = populationRes.data[i];
-        const zipCode = row[zctaIdx];
-        populationData[zipCode] = {
-          P1_001N: row[p1001nIdx]
-        };
+        if (row && row.length === popHeaders.length) {
+          const zipCode = row[zctaIdx];
+          populationData[zipCode] = {
+            P1_001N: row[p1001nIdx]
+          };
+        }
       }
     }
     
@@ -174,11 +294,13 @@ export const fetchZipcodeData = async (apiKey) => {
       
       for (let i = 1; i < acsRes.data.length; i++) {
         const row = acsRes.data[i];
-        const zipCode = row[zctaIdx];
-        acsData[zipCode] = {
-          DP03_0004PE: row[empRateIdx],
-          DP02_0001E: row[householdsIdx]
-        };
+        if (row && row.length === acsHeaders.length) {
+          const zipCode = row[zctaIdx];
+          acsData[zipCode] = {
+            DP03_0004PE: row[empRateIdx],
+            DP02_0001E: row[householdsIdx]
+          };
+        }
       }
     }
     
@@ -191,26 +313,48 @@ export const fetchZipcodeData = async (apiKey) => {
       
       for (let i = 1; i < incomeRes.data.length; i++) {
         const row = incomeRes.data[i];
-        const zipCode = row[zctaIdx];
-        incomeData[zipCode] = {
-          S1901_C01_012E: row[incomeIdx]
-        };
+        if (row && row.length === incHeaders.length) {
+          const zipCode = row[zctaIdx];
+          incomeData[zipCode] = {
+            S1901_C01_012E: row[incomeIdx]
+          };
+        }
       }
     }
     
     // Merge datasets
     const mergedData = {};
     
-    Object.keys(populationData).forEach(zipCode => {
+    // Create a set of all ZIP codes from all datasets
+    const allZipCodes = new Set([
+      ...Object.keys(populationData),
+      ...Object.keys(acsData),
+      ...Object.keys(incomeData)
+    ]);
+    
+    // Merge data for each ZIP code
+    allZipCodes.forEach(zipCode => {
       mergedData[zipCode] = {
-        ...populationData[zipCode],
+        ...(populationData[zipCode] || {}),
         ...(acsData[zipCode] || {}),
         ...(incomeData[zipCode] || {})
       };
     });
     
-    console.log(`Fetched census data for ${Object.keys(mergedData).length} ZIP codes`);
-    return mergedData;
+    console.log(`Raw ZIP code data fetched for ${Object.keys(mergedData).length} ZIPs`);
+    
+    // Process the data to ensure consistent key format
+    const processedData = processCensusData(mergedData, normalizeZipCode);
+    
+    console.log(`Processed ZIP code data for ${Object.keys(processedData).length} ZIPs`);
+    
+    // Log a sample of the data
+    const sampleKeys = Object.keys(processedData).slice(0, 3);
+    sampleKeys.forEach(key => {
+      console.log(`Sample data for ZIP ${key}:`, processedData[key]);
+    });
+    
+    return processedData;
     
   } catch (error) {
     console.error("Error fetching ZIP code census data:", error);
@@ -219,57 +363,163 @@ export const fetchZipcodeData = async (apiKey) => {
 };
 
 /**
- * Enriches GeoJSON features with census data
- * @param {Object} geoJsonLayer - ArcGIS GeoJSONLayer object
- * @param {Object} censusData - Map of GEOIDs to census data
- * @param {string} idField - Field name in GeoJSON that contains the census id
+ * Add census data directly to the attributes of GeoJSON feature
+ * @param {Object} feature - An ArcGIS graphic/feature object
+ * @param {Object} censusData - The census data lookup object
+ * @param {string} idField - The field in the feature that contains the ID to match
+ * @param {Function} normalizeFunction - Function to normalize IDs 
+ * @returns {boolean} - Whether a match was found and applied
  */
-export const enrichGeoJsonWithCensusData = async (geoJsonLayer, censusData, idField) => {
-  if (!geoJsonLayer || !censusData || Object.keys(censusData).length === 0) {
-    console.warn("Missing data for enrichment");
-    return;
+function addCensusDataToFeature(feature, censusData, idField, normalizeFunction) {
+  if (!feature || !feature.attributes || !censusData || !idField) {
+    return false;
+  }
+  
+  // Get the ID value from the feature
+  const idValue = feature.attributes[idField];
+  if (!idValue) {
+    return false;
+  }
+  
+  // Normalize the ID value to match our census data format
+  const normalizedId = normalizeFunction(idValue);
+  if (!normalizedId) {
+    return false;
+  }
+  
+  // Check if we have census data for this ID
+  if (censusData[normalizedId]) {
+    // Copy the census data to the feature attributes
+    Object.assign(feature.attributes, censusData[normalizedId]);
+    return true;
+  }
+  
+  // No match found with normalized ID, try the original ID as fallback
+  if (censusData[idValue]) {
+    Object.assign(feature.attributes, censusData[idValue]);
+    return true;
+  }
+  
+  return false;
+}
+
+/**
+ * Directly update a layer's features with census data
+ * @param {Object} layer - The ArcGIS GeoJSONLayer object
+ * @param {Object} censusData - The census data mapped by ID
+ * @param {boolean} isZipCodeLayer - Whether this is a ZIP code layer (true) or tract layer (false)
+ * @returns {Promise<number>} - Number of features updated
+ */
+export async function injectCensusDataIntoLayer(layer, censusData, isZipCodeLayer = false) {
+  if (!layer || !censusData || Object.keys(censusData).length === 0) {
+    console.warn("Missing layer or census data for injection");
+    return 0;
   }
   
   try {
-    // Query all features to enrich them
-    const query = geoJsonLayer.createQuery();
+    // Determine the ID field and normalize function based on layer type
+    let idField;
+    let normalizeFunction;
+    
+    if (isZipCodeLayer) {
+      // For ZIP code layers, try common ZIP code field names
+      const zipCodeFields = ["ZIP_CODE", "ZIP", "ZIPCODE", "ZCTA"];
+      // Use the first field that exists in the layer's fields
+      const layerFields = layer.fields?.map(f => f.name) || [];
+      idField = zipCodeFields.find(field => layerFields.includes(field)) || "ZIP_CODE";
+      normalizeFunction = normalizeZipCode;
+      console.log(`Using ${idField} as the ZIP code identifier field`);
+    } else {
+      // For census tract layers, use GEOID
+      idField = "GEOID";
+      normalizeFunction = normalizeTractGeoid;
+    }
+    
+    // Query all features
+    const query = layer.createQuery();
     query.where = "1=1"; // Get all features
     query.outFields = ["*"];
     query.returnGeometry = true;
     
-    const result = await geoJsonLayer.queryFeatures(query);
+    const result = await layer.queryFeatures(query);
     
-    // Abort if no features found
     if (!result.features || result.features.length === 0) {
-      console.warn("No features found to enrich with census data");
-      return;
+      console.warn("No features returned from query");
+      return 0;
     }
     
-    console.log(`Enriching ${result.features.length} features with census data`);
+    console.log(`Processing ${result.features.length} features for census data injection`);
     
-    // Create graphics to add back to the layer
-    const updatedGraphics = result.features.map(feature => {
-      // Get the GEOID or ZIP code from the feature
-      const id = feature.attributes[idField];
+    // Track successful matches
+    let matchCount = 0;
+    
+    // Batch process features
+    const batchSize = 100;
+    const batches = [];
+    
+    for (let i = 0; i < result.features.length; i += batchSize) {
+      batches.push(result.features.slice(i, i + batchSize));
+    }
+    
+    console.log(`Split features into ${batches.length} batches for processing`);
+    
+    // Process each batch
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+      const batch = batches[batchIndex];
+      console.log(`Processing batch ${batchIndex + 1}/${batches.length} (${batch.length} features)`);
       
-      if (id && censusData[id]) {
-        // Merge census data with feature attributes
-        feature.attributes = {
-          ...feature.attributes,
-          ...censusData[id]
+      let localMatchCount = 0; // Local counter to avoid closure issues
+      
+      // Update features in this batch with census data
+      const updatedFeatures = batch.map(feature => {
+        const matched = addCensusDataToFeature(feature, censusData, idField, normalizeFunction);
+        if (matched) localMatchCount++;
+        
+        // Sample logging for debug
+        if (Math.random() < 0.02) { // Log about 2% of features for debugging
+          console.log(`Feature ${feature.attributes[idField]} census data integration:`, {
+            matched,
+            totalPopulation: feature.attributes.P1_001N || "Not found",
+            employmentRate: feature.attributes.DP03_0004PE || "Not found",
+            households: feature.attributes.DP02_0001E || "Not found",
+            income: feature.attributes.S1901_C01_012E || "Not found"
+          });
+        }
+        
+        return feature;
+      });
+      
+      // Update total match count
+      matchCount += localMatchCount;
+      
+      // Apply updates to the layer
+      try {
+        const edits = {
+          updateFeatures: updatedFeatures
         };
+        
+        await layer.applyEdits(edits);
+      } catch (error) {
+        console.error(`Error applying edits for batch ${batchIndex + 1}:`, error);
       }
       
-      return feature;
-    });
+      // Log progress
+      console.log(`Batch ${batchIndex + 1} complete. Total matches so far: ${matchCount}`);
+    }
     
-    // Apply updates to the layer
-    // Note: In a real application, you might need to use the layer's applyEdits method
-    // This is a simplified approach that assumes the GeoJSON source can be updated
-    console.log(`Updated ${updatedGraphics.length} features with census data`);
+    console.log(`Census data injection complete. Matched ${matchCount}/${result.features.length} features`);
     
-    return updatedGraphics;
+    // Force a refresh of the layer
+    const currentVisibility = layer.visible;
+    layer.visible = false;
+    setTimeout(() => {
+      layer.visible = currentVisibility;
+      console.log("Layer refreshed to apply changes");
+    }, 500);
+    
+    return matchCount;
   } catch (error) {
-    console.error("Error enriching GeoJSON with census data:", error);
+    console.error("Error during census data injection:", error);
+    return 0;
   }
-};
+}

@@ -47,7 +47,7 @@ export const performSearch = async ({
         ? geometry
         : geometry.extent?.center || geometry;
     
-    console.log("Match found, zooming to location");
+    console.log("Match found, zooming to location", location);
     
     // First, zoom to the location 
     if (geometry.type === "point") {
@@ -97,7 +97,7 @@ export const performSearch = async ({
       view.popup.location = location;
       view.popup.visible = true;
       
-      console.log("Popup content set:", { title, contentLength: content?.length || 0 });
+      console.log("Popup content set:", { title, contentLength: content?.length, content: content || 0 });
     } catch (popupError) {
       console.error("Error setting popup properties:", popupError);
     }
