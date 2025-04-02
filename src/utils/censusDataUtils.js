@@ -363,52 +363,11 @@ export const fetchZipcodeData = async (apiKey) => {
 };
 
 /**
- * Add census data directly to the attributes of GeoJSON feature
- * @param {Object} feature - An ArcGIS graphic/feature object
- * @param {Object} censusData - The census data lookup object
- * @param {string} idField - The field in the feature that contains the ID to match
- * @param {Function} normalizeFunction - Function to normalize IDs 
- * @returns {boolean} - Whether a match was found and applied
- */
-function addCensusDataToFeature(feature, censusData, idField, normalizeFunction) {
-  if (!feature || !feature.attributes || !censusData || !idField) {
-    return false;
-  }
-  
-  // Get the ID value from the feature
-  const idValue = feature.attributes[idField];
-  if (!idValue) {
-    return false;
-  }
-  
-  // Normalize the ID value to match our census data format
-  const normalizedId = normalizeFunction(idValue);
-  if (!normalizedId) {
-    return false;
-  }
-  
-  // Check if we have census data for this ID
-  if (censusData[normalizedId]) {
-    // Copy the census data to the feature attributes
-    Object.assign(feature.attributes, censusData[normalizedId]);
-    return true;
-  }
-  
-  // No match found with normalized ID, try the original ID as fallback
-  if (censusData[idValue]) {
-    Object.assign(feature.attributes, censusData[idValue]);
-    return true;
-  }
-  
-  return false;
-}
-
-/**
- * Directly update a layer's features with census data
+ * Modified version of injectCensusDataIntoLayer that doesn't use applyEdits
  * @param {Object} layer - The ArcGIS GeoJSONLayer object
  * @param {Object} censusData - The census data mapped by ID
  * @param {boolean} isZipCodeLayer - Whether this is a ZIP code layer (true) or tract layer (false)
- * @returns {Promise<number>} - Number of features updated
+ * @returns {Promise<number>} - Number of features processed
  */
 export async function injectCensusDataIntoLayer(layer, censusData, isZipCodeLayer = false) {
   if (!layer || !censusData || Object.keys(censusData).length === 0) {
@@ -417,9 +376,8 @@ export async function injectCensusDataIntoLayer(layer, censusData, isZipCodeLaye
   }
   
   try {
-    // Determine the ID field and normalize function based on layer type
+    // Determine the ID field based on layer type
     let idField;
-    let normalizeFunction;
     
     if (isZipCodeLayer) {
       // For ZIP code layers, try common ZIP code field names
@@ -427,19 +385,17 @@ export async function injectCensusDataIntoLayer(layer, censusData, isZipCodeLaye
       // Use the first field that exists in the layer's fields
       const layerFields = layer.fields?.map(f => f.name) || [];
       idField = zipCodeFields.find(field => layerFields.includes(field)) || "ZIP_CODE";
-      normalizeFunction = normalizeZipCode;
       console.log(`Using ${idField} as the ZIP code identifier field`);
     } else {
       // For census tract layers, use GEOID
       idField = "GEOID";
-      normalizeFunction = normalizeTractGeoid;
     }
     
-    // Query all features
+    // Query all features to get their attributes
     const query = layer.createQuery();
     query.where = "1=1"; // Get all features
     query.outFields = ["*"];
-    query.returnGeometry = true;
+    query.returnGeometry = false;
     
     const result = await layer.queryFeatures(query);
     
@@ -450,74 +406,60 @@ export async function injectCensusDataIntoLayer(layer, censusData, isZipCodeLaye
     
     console.log(`Processing ${result.features.length} features for census data injection`);
     
-    // Track successful matches
-    let matchCount = 0;
+    // Instead of editing the layer, store the census data as a property on the layer
+    // that we can access in popups and renderers
+    const featureCensusData = new Map();
     
-    // Batch process features
-    const batchSize = 100;
-    const batches = [];
-    
-    for (let i = 0; i < result.features.length; i += batchSize) {
-      batches.push(result.features.slice(i, i + batchSize));
-    }
-    
-    console.log(`Split features into ${batches.length} batches for processing`);
-    
-    // Process each batch
-    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-      const batch = batches[batchIndex];
-      console.log(`Processing batch ${batchIndex + 1}/${batches.length} (${batch.length} features)`);
-      
-      let localMatchCount = 0; // Local counter to avoid closure issues
-      
-      // Update features in this batch with census data
-      const updatedFeatures = batch.map(feature => {
-        const matched = addCensusDataToFeature(feature, censusData, idField, normalizeFunction);
-        if (matched) localMatchCount++;
+    // Process features and build the census data map
+    result.features.forEach(feature => {
+      const id = feature.attributes[idField];
+      if (id) {
+        // Normalize the ID to match our census data format
+        const normalizedId = isZipCodeLayer 
+          ? normalizeZipCode(id)
+          : normalizeTractGeoid(id);
         
-        // Sample logging for debug
-        if (Math.random() < 0.02) { // Log about 2% of features for debugging
-          console.log(`Feature ${feature.attributes[idField]} census data integration:`, {
-            matched,
-            totalPopulation: feature.attributes.P1_001N || "Not found",
-            employmentRate: feature.attributes.DP03_0004PE || "Not found",
-            households: feature.attributes.DP02_0001E || "Not found",
-            income: feature.attributes.S1901_C01_012E || "Not found"
+        // If we have census data for this ID, add it to our map
+        if (censusData[normalizedId]) {
+          featureCensusData.set(id, censusData[normalizedId]);
+        }
+      }
+    });
+    
+    console.log(`Matched census data for ${featureCensusData.size} features`);
+    
+    // Store the census data on the layer for use in popups
+    layer.featureCensusData = featureCensusData;
+    
+    // Update the popup template to include census data
+    if (layer.popupTemplate && featureCensusData.size > 0) {
+      const originalContent = layer.popupTemplate.content;
+      
+      layer.popupTemplate.content = (feature) => {
+        // Get the original content first
+        let content = typeof originalContent === "function" 
+          ? originalContent(feature) 
+          : originalContent || "";
+          
+        // Get the feature ID
+        const featureId = feature.graphic.attributes[idField];
+        
+        // Get census data for this feature
+        const featureCensusValues = featureCensusData.get(featureId);
+        
+        if (featureCensusValues) {
+          // Apply census data to the feature's attributes for this popup only
+          // This doesn't modify the layer's actual features
+          Object.entries(featureCensusValues).forEach(([key, value]) => {
+            feature.graphic.attributes[key] = value;
           });
         }
         
-        return feature;
-      });
-      
-      // Update total match count
-      matchCount += localMatchCount;
-      
-      // Apply updates to the layer
-      try {
-        const edits = {
-          updateFeatures: updatedFeatures
-        };
-        
-        await layer.applyEdits(edits);
-      } catch (error) {
-        console.error(`Error applying edits for batch ${batchIndex + 1}:`, error);
-      }
-      
-      // Log progress
-      console.log(`Batch ${batchIndex + 1} complete. Total matches so far: ${matchCount}`);
+        return content;
+      };
     }
     
-    console.log(`Census data injection complete. Matched ${matchCount}/${result.features.length} features`);
-    
-    // Force a refresh of the layer
-    const currentVisibility = layer.visible;
-    layer.visible = false;
-    setTimeout(() => {
-      layer.visible = currentVisibility;
-      console.log("Layer refreshed to apply changes");
-    }, 500);
-    
-    return matchCount;
+    return featureCensusData.size;
   } catch (error) {
     console.error("Error during census data injection:", error);
     return 0;

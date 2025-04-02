@@ -9,6 +9,11 @@ import Papa from "papaparse";
 import { fetchCensusTractsData, fetchZipcodeData, injectCensusDataIntoLayer } from "../utils/censusDataUtils";
 import SearchComponent from "./SearchComponent";
 import PolygonSelection from "./PolygonSelection";
+import { 
+  processAdoptionStatus, 
+  createAdoptionStatusRenderer,
+  createAdoptionStatusPopupTemplate 
+} from "../utils/adoptionStatusUtils";
 
 // CSV fetch functions using PapaParse
 async function getSheetData() {
@@ -17,8 +22,22 @@ async function getSheetData() {
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vTuVsdCcxjO9B4eUn8RornEhC061GRbybSbNlgCEXNuBNTPhPyybN5Yn00kfhmmTAeCmtIZ-hsNrxH4/pub?output=csv";
   try {
     const response = await axios.get(sheetUrl);
-    const parsed = Papa.parse(response.data, { header: true, skipEmptyLines: true });
-    console.log("Poverty data loaded:", parsed.data);
+    const parsed = Papa.parse(response.data, { 
+      header: true, 
+      skipEmptyLines: true,
+      transformHeader: (header) => header.trim() 
+    });
+    
+    console.log("Poverty data loaded:", parsed.data.length, "rows");
+    console.log("CSV Headers:", parsed.meta.fields);
+    
+    // Check if we have the required columns
+    const hasCensusTract = parsed.meta.fields.includes("Census Tract");
+    const hasAdoptionStatus = parsed.meta.fields.includes("Adoption Status");
+    
+    console.log("Has Census Tract column:", hasCensusTract);
+    console.log("Has Adoption Status column:", hasAdoptionStatus);
+    
     return parsed.data;
   } catch (error) {
     console.error("Error fetching poverty CSV data:", error);
@@ -85,6 +104,7 @@ const ArcGISMap = () => {
   const geoJsonLayerRef = useRef(null);
   const [layerLoaded, setLayerLoaded] = useState(false);
   const [searchStatus, setSearchStatus] = useState("");
+  // eslint-disable-next-line no-unused-vars
   const [povertyData, setPovertyData] = useState([]);
   // eslint-disable-next-line no-unused-vars
   const [churchData, setChurchData] = useState([]);
@@ -92,10 +112,20 @@ const ArcGISMap = () => {
   // New state for census data
   const [censusTractData, setCensusTractData] = useState({});
   const [zipCodeData, setZipCodeData] = useState({});
+  // New state for adoption status map
+  const [adoptionStatusMap, setAdoptionStatusMap] = useState({});
 
   // Fetch CSV data on mount
   useEffect(() => {
-    getSheetData().then(setPovertyData).catch(console.error);
+    getSheetData()
+      .then(data => {
+        setPovertyData(data);
+        // Process the adoption status from the CSV data
+        const statusMap = processAdoptionStatus(data);
+        setAdoptionStatusMap(statusMap);
+        console.log("Adoption status processed from CSV data");
+      })
+      .catch(console.error);
     
     getChurchData().then(data => {
       setChurchData(data.rawData);
@@ -160,38 +190,29 @@ const ArcGISMap = () => {
   // Function to generate content for census tract popups - using useCallback to avoid dependency issues
   const generateCensusTractContent = useCallback((graphic) => {
     const attrs = graphic.attributes || {};
+    
     // US Census API fields
     const totalPopulation = attrs.P1_001N || "N/A";
     const employmentRate = attrs.DP03_0004PE || "N/A";
     const totalHouseholds = attrs.DP02_0001E || "N/A";
     const medianHouseholdIncome = attrs.S1901_C01_012E || "N/A";
-    // Additional CSV data from poverty CSV using the "NAME" field as the tract identifier
-    const tractId = attrs.NAME || "";
-    const record = povertyData.find(
-      (row) =>
-        row["Census Tract"] &&
-        row["Census Tract"].trim() === tractId.trim()
-    ) || {};
-    const adoptionStatus = record["Adoption Status"] || "N/A";
-    const adoptedBy = record["Adopted by"] || "N/A";
-    const csvChurches = record["Churches"] || "N/A";
-    const nonProfits = record["Non-Profits"] || "N/A";
-    const localBusiness = record["Local Business"] || "N/A";
-
+    
+    // We'll add adoption status in the layer's popup template content function
     return `
       <div style="text-align: left;">
+        <b>Census Tract:</b> ${attrs.NAMELSAD || "Unknown"}<br>
         <b>Total Population:</b> ${totalPopulation}<br>
         <b>Employment Rate:</b> ${employmentRate}%<br>
         <b>Total Households:</b> ${totalHouseholds}<br>
         <b>Median Household Income:</b> $${medianHouseholdIncome}<br>
-        <b>Adoption Status:</b> ${adoptionStatus}<br>
-        <b>Adopted by:</b> ${adoptedBy}<br>
-        <b>Churches:</b> ${csvChurches}<br>
-        <b>Non-Profits:</b> ${nonProfits}<br>
-        <b>Local Business:</b> ${localBusiness}
+        <b>Adoption Status:</b> <span id="adoption-status-placeholder"></span><br>
+        <b>Adopted by:</b> <span id="adopted-by-placeholder"></span><br>
+        <b>Churches:</b> <span id="churches-placeholder"></span><br>
+        <b>Non-Profits:</b> <span id="nonprofits-placeholder"></span><br>
+        <b>Local Business:</b> <span id="business-placeholder"></span>
       </div>
     `;
-  }, [povertyData]);
+  }, []);
 
   // Function to generate content for zip code popups - using useCallback to avoid dependency issues
   const generateZipCodeContent = useCallback((feature) => {
@@ -234,11 +255,12 @@ const ArcGISMap = () => {
 
     return `
       <div style="text-align: left;">
+        <h3>ZIP Code: ${zipCode || "N/A"}</h3>
         <b>Total Population:</b> ${totalPopulation}<br>
         <b>Employment Rate:</b> ${employmentRate}%<br>
         <b>Total Households:</b> ${totalHouseholds}<br>
         <b>Median Household Income:</b> $${medianHouseholdIncome}<br>
-        <b>ZIP Code:</b> ${zipCode || "N/A"}<br>
+        <b>Adoption Status:</b> <span id="adoption-status-placeholder"></span><br>
         <b>Churches:</b> ${churchNames}
       </div>
     `;
@@ -259,7 +281,7 @@ const ArcGISMap = () => {
     const popupTemplate =
       selectedLayer === "censusTracts"
         ? {
-            title: "{NAMELSAD}",
+            title: "{NAMELSAD}", // This displays the census tract identifier
             content: generateCensusTractContent
           }
         : {
@@ -267,6 +289,8 @@ const ArcGISMap = () => {
             content: generateZipCodeContent
           };
 
+    // Create the GeoJSON layer with a basic renderer
+    // Initially use a simple renderer, we'll update it after the layer loads
     const geoJsonLayer = new GeoJSONLayer({
       url: geojsonUrl,
       outFields: ["*"],
@@ -274,12 +298,12 @@ const ArcGISMap = () => {
         type: "simple",
         symbol: {
           type: "simple-fill",
-          color:
-            selectedLayer === "censusTracts"
-              ? "rgba(255, 0, 0, 0.3)"
-              : "rgba(0, 255, 0, 0.3)",
-          outline: { color: "black", width: 1 },
-        },
+          color: "rgba(128, 128, 128, 0.3)", // Gray for default
+          outline: {
+            color: "black",
+            width: 1,
+          },
+        }
       },
       popupTemplate,
     });
@@ -288,24 +312,56 @@ const ArcGISMap = () => {
     geoJsonLayer.when(() => {
       geoJsonLayerRef.current = geoJsonLayer;
       
-      // Enrich the GeoJSON layer with census data after it loads
-      const apiKey = process.env.REACT_APP_CENSUS_API_KEY;
-      if (apiKey) {
-        if (selectedLayer === "censusTracts" && Object.keys(censusTractData).length > 0) {
-          // For census tracts, use GEOID field to match with census data
-          injectCensusDataIntoLayer(geoJsonLayer, censusTractData, false)
-            .then(() => {
-              console.log("GeoJSON layer enriched with census tract data");
-            })
-            .catch(console.error);
-        } else if (selectedLayer === "zipCodes" && Object.keys(zipCodeData).length > 0) {
-          // For ZIP codes, use ZIP_CODE field to match with census data
-          injectCensusDataIntoLayer(geoJsonLayer, zipCodeData, true)
-            .then(() => {
-              console.log("GeoJSON layer enriched with ZIP code data");
-            })
-            .catch(console.error);
+      // Use a try-catch block to handle any errors during processing
+      try {
+        // Enrich the GeoJSON layer with census data after it loads
+        const apiKey = process.env.REACT_APP_CENSUS_API_KEY;
+        
+        if (apiKey) {
+          if (selectedLayer === "censusTracts" && Object.keys(censusTractData).length > 0) {
+            // For census tracts, use GEOID field to match with census data
+            injectCensusDataIntoLayer(geoJsonLayer, censusTractData, false)
+              .then(() => {
+                console.log("GeoJSON layer enriched with census tract data");
+                
+                // Apply adoption status renderer if we have status data
+                if (Object.keys(adoptionStatusMap).length > 0) {
+                  // Create a renderer based on adoption status
+                  const adoptionRenderer = createAdoptionStatusRenderer(adoptionStatusMap);
+                  console.log(`Created renderer with ${adoptionRenderer.uniqueValueInfos.length} adopted tracts`);
+                  
+                  // Apply the renderer to the layer
+                  geoJsonLayer.renderer = adoptionRenderer;
+                  
+                  // Update the popup template with adoption status
+                  geoJsonLayer.popupTemplate = createAdoptionStatusPopupTemplate(
+                    geoJsonLayer.popupTemplate, 
+                    adoptionStatusMap
+                  );
+                  
+                  // Force a refresh of the layer
+                  const currentVisibility = geoJsonLayer.visible;
+                  geoJsonLayer.visible = false;
+                  setTimeout(() => {
+                    geoJsonLayer.visible = currentVisibility;
+                  }, 100);
+                }
+              })
+              .catch(console.error);
+          } else if (selectedLayer === "zipCodes" && Object.keys(zipCodeData).length > 0) {
+            // For ZIP codes, use ZIP_CODE field to match with census data
+            injectCensusDataIntoLayer(geoJsonLayer, zipCodeData, true)
+              .then(() => {
+                console.log("GeoJSON layer enriched with ZIP code data");
+                
+                // For ZIP codes we need a different approach since we don't have direct ZIP to adoption mapping
+                // We could implement this based on your requirements
+              })
+              .catch(console.error);
+          }
         }
+      } catch (error) {
+        console.error("Error processing layer:", error);
       }
       
       setLayerLoaded(true);
@@ -377,7 +433,7 @@ const ArcGISMap = () => {
         console.error("Error in hitTest:", error);
       });
     });
-  }, [selectedLayer, map, view, generateCensusTractContent, generateZipCodeContent, censusTractData, zipCodeData]);
+  }, [selectedLayer, map, view, generateCensusTractContent, generateZipCodeContent, censusTractData, zipCodeData, adoptionStatusMap]);
 
   // Handle search functionality using performSearch utility
   const handleSearch = async (e) => {
