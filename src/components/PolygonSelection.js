@@ -1,49 +1,146 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import GraphicsLayer from "@arcgis/core/layers/GraphicsLayer";
-import Graphic from "@arcgis/core/Graphic";
-import SimpleFillSymbol from "@arcgis/core/symbols/SimpleFillSymbol";
-import SimpleLineSymbol from "@arcgis/core/symbols/SimpleLineSymbol";
-import Color from "@arcgis/core/Color";
-
-// Define the symbols for selected and unselected features
-const SELECTED_SYMBOL = new SimpleFillSymbol({
-  color: new Color([255, 140, 0, 0.5]),
-  outline: new SimpleLineSymbol({
-    color: new Color([255, 140, 0, 1]),
-    width: 2
-  })
-});
 
 const PolygonSelection = ({ map, view, geoJsonLayer }) => {
   const [selectionMode, setSelectionMode] = useState(false);
-  const [selectedFeatures, setSelectedFeatures] = useState([]);
-  const selectionLayerRef = useRef(null);
+  const [selectedFeatureIds, setSelectedFeatureIds] = useState([]);
   const [isSelecting, setIsSelecting] = useState(false);
-  
-  // Update the graphics in the selection layer
-  const updateSelectionGraphics = useCallback((features) => {
-    if (!selectionLayerRef.current) return;
+  const originalRendererRef = useRef(null);
+
+  // Helper function to get feature ID
+  const getFeatureId = useCallback((feature) => {
+    if (!feature || !feature.attributes) return null;
     
-    // Clear existing graphics
-    selectionLayerRef.current.removeAll();
-    
-    // Add new graphics for each selected feature
-    features.forEach(feature => {
-      const selectionGraphic = new Graphic({
-        geometry: feature.geometry,
-        symbol: SELECTED_SYMBOL
-      });
-      
-      selectionLayerRef.current.add(selectionGraphic);
-    });
+    return feature.attributes.OBJECTID || 
+           feature.attributes.FID || 
+           feature.attributes.OID ||
+           feature.attributes.GEOID ||
+           feature.attributes.NAME;
   }, []);
-  
-  // Handle map clicks for selection
+
+  // Save the original renderer when component mounts
+  useEffect(() => {
+    if (geoJsonLayer && !originalRendererRef.current) {
+      // Store the original renderer to restore it later
+      originalRendererRef.current = geoJsonLayer.renderer;
+      console.log("Original renderer saved:", originalRendererRef.current);
+    }
+  }, [geoJsonLayer]);
+
+  // Highlight selected features by modifying the renderer
+  const updateHighlights = useCallback(() => {
+    if (!geoJsonLayer || !originalRendererRef.current) {
+      console.warn("Layer or original renderer not available");
+      return;
+    }
+
+    try {
+      console.log(`Updating highlights for ${selectedFeatureIds.length} features`);
+      
+      // If no selections, restore original renderer
+      if (selectedFeatureIds.length === 0) {
+        geoJsonLayer.renderer = originalRendererRef.current;
+        console.log("Restored original renderer - no features selected");
+        return;
+      }
+
+      // Create a unique value renderer based on feature IDs
+      const uniqueValueRenderer = {
+        type: "unique-value",
+        field: "OBJECTID", // Fallback to common ID fields below if needed
+        defaultSymbol: originalRendererRef.current.symbol || {
+          type: "simple-fill",
+          color: [200, 200, 200, 0.6],
+          outline: {
+            color: [70, 70, 70, 0.9],
+            width: 1
+          }
+        },
+        uniqueValueInfos: []
+      };
+
+      // Add unique value info for each selected feature
+      selectedFeatureIds.forEach(id => {
+        uniqueValueRenderer.uniqueValueInfos.push({
+          value: id,
+          symbol: {
+            type: "simple-fill",
+            color: [255, 255, 0, 0.5], // Bright yellow
+            outline: {
+              color: [255, 0, 0, 1], // Red
+              width: 3
+            }
+          }
+        });
+      });
+
+      // Handle different ID field names
+      // Try different ID fields depending on what's in the data
+      geoJsonLayer.fields.forEach(field => {
+        if (["OBJECTID", "FID", "OID", "GEOID"].includes(field.name)) {
+          console.log(`Using ${field.name} as the ID field for renderer`);
+          uniqueValueRenderer.field = field.name;
+        }
+      });
+
+      // Apply the renderer to the layer
+      geoJsonLayer.renderer = uniqueValueRenderer;
+      
+      // Force the layer to refresh
+      const visible = geoJsonLayer.visible;
+      geoJsonLayer.visible = false;
+      setTimeout(() => {
+        geoJsonLayer.visible = visible;
+        console.log("Layer visibility toggled to refresh renderer");
+      }, 50);
+      
+    } catch (error) {
+      console.error("Error updating highlights:", error);
+      // Restore original renderer in case of error
+      if (originalRendererRef.current) {
+        geoJsonLayer.renderer = originalRendererRef.current;
+      }
+    }
+  }, [geoJsonLayer, selectedFeatureIds]);
+
+  // Update highlights when selected features change
+  useEffect(() => {
+    updateHighlights();
+  }, [selectedFeatureIds, updateHighlights]);
+
+  // Clear all selections
+  const clearSelection = useCallback(() => {
+    setSelectedFeatureIds([]);
+    
+    // Restore original renderer
+    if (geoJsonLayer && originalRendererRef.current) {
+      geoJsonLayer.renderer = originalRendererRef.current;
+      console.log("Selection cleared, original renderer restored");
+    }
+  }, [geoJsonLayer]);
+
+  // Toggle selection mode
+  const toggleSelectionMode = useCallback(() => {
+    setSelectionMode(prevMode => {
+      const newMode = !prevMode;
+      
+      // If turning off selection mode, clear all selections
+      if (!newMode) {
+        clearSelection();
+      } else {
+        console.log("Selection mode activated");
+      }
+      
+      return newMode;
+    });
+  }, [clearSelection]);
+
+  // Handle clicks on the map for feature selection
   const handleMapClick = useCallback(async (event) => {
     if (!selectionMode || !geoJsonLayer || isSelecting) return;
     
     try {
       setIsSelecting(true);
+      console.log("Processing map click for feature selection");
       
       // Perform hit test to see if a feature was clicked
       const response = await view.hitTest(event);
@@ -51,101 +148,86 @@ const PolygonSelection = ({ map, view, geoJsonLayer }) => {
         result => result.graphic?.layer === geoJsonLayer
       );
       
-      if (result) {
+      if (result && result.graphic) {
         const feature = result.graphic;
-        const featureId = feature.attributes.OBJECTID || feature.attributes.FID || feature.attributes.OID;
+        const featureId = getFeatureId(feature);
         
-        // Check if feature is already selected
-        const isAlreadySelected = selectedFeatures.some(f => 
-          f.attributes.OBJECTID === featureId || f.attributes.FID === featureId || f.attributes.OID === featureId
-        );
+        console.log(`Feature clicked: ${featureId}`);
         
-        if (isAlreadySelected) {
-          // Remove from selection
-          const updatedSelection = selectedFeatures.filter(f => 
-            f.attributes.OBJECTID !== featureId && f.attributes.FID !== featureId && f.attributes.OID !== featureId
-          );
-          setSelectedFeatures(updatedSelection);
-          
-          // Update the graphics layer
-          updateSelectionGraphics(updatedSelection);
-        } else {
-          // Add to selection
-          const newSelection = [...selectedFeatures, feature];
-          setSelectedFeatures(newSelection);
-          
-          // Update the graphics layer
-          updateSelectionGraphics(newSelection);
+        if (!featureId) {
+          console.warn("Could not determine feature ID for selection");
+          setIsSelecting(false);
+          return;
         }
+        
+        // Toggle selection for this feature
+        setSelectedFeatureIds(prevIds => {
+          const isAlreadySelected = prevIds.includes(featureId);
+          
+          if (isAlreadySelected) {
+            // Remove from selection
+            console.log(`Removing feature ${featureId} from selection`);
+            return prevIds.filter(id => id !== featureId);
+          } else {
+            // Add to selection
+            console.log(`Adding feature ${featureId} to selection`);
+            return [...prevIds, featureId];
+          }
+        });
+      } else {
+        console.log("Click did not hit any features in the target layer");
       }
     } catch (error) {
-      console.error("Error during selection:", error);
+      console.error("Error during selection process:", error);
     } finally {
       setIsSelecting(false);
     }
-  }, [selectionMode, geoJsonLayer, isSelecting, selectedFeatures, updateSelectionGraphics, view]);
-  
-  // Initialize the selection layer when the map is ready
-  useEffect(() => {
-    if (!map) return;
-    
-    // Create a graphics layer for selections
-    const selectionLayer = new GraphicsLayer({
-      id: "selectionLayer",
-      title: "Selected Features"
-    });
-    
-    map.add(selectionLayer);
-    selectionLayerRef.current = selectionLayer;
-    
-    // Cleanup function to remove the layer when unmounting
-    return () => {
-      if (map && selectionLayer) {
-        map.remove(selectionLayer);
-      }
-    };
-  }, [map]);
-  
-  // Set up the click handler when selection mode is active
+  }, [selectionMode, geoJsonLayer, isSelecting, getFeatureId, view]);
+
+  // Set up click handler when selection mode is active
   useEffect(() => {
     if (!view || !selectionMode) return;
     
+    console.log("Adding click handler for selection mode");
     const clickHandler = view.on("click", handleMapClick);
     
     return () => {
       if (clickHandler) {
+        console.log("Removing click handler");
         clickHandler.remove();
       }
     };
   }, [view, selectionMode, handleMapClick]);
   
-  // Toggle selection mode
-  const toggleSelectionMode = () => {
-    const newMode = !selectionMode;
-    setSelectionMode(newMode);
-    
-    if (!newMode) {
-      // If turning off selection mode, clear all selections
-      clearSelection();
-    }
-  };
-  
-  // Clear all selections
-  const clearSelection = () => {
-    setSelectedFeatures([]);
-    if (selectionLayerRef.current) {
-      selectionLayerRef.current.removeAll();
-    }
-  };
-  
+  // Restore original renderer when component unmounts
+  useEffect(() => {
+    return () => {
+      if (geoJsonLayer && originalRendererRef.current) {
+        geoJsonLayer.renderer = originalRendererRef.current;
+        console.log("Component unmounted, original renderer restored");
+      }
+    };
+  }, [geoJsonLayer]);
+
   // Generate a report from the selected features
-  const generateReport = async () => {
-    if (selectedFeatures.length === 0) {
+  const generateReport = useCallback(async () => {
+    if (selectedFeatureIds.length === 0) {
       alert("Please select at least one feature to generate a report.");
       return;
     }
 
     try {
+      console.log(`Generating report for ${selectedFeatureIds.length} features`);
+      
+      // Query the selected features to get full feature data
+      const query = geoJsonLayer.createQuery();
+      const idField = geoJsonLayer.objectIdField || "OBJECTID";
+      query.where = `${idField} IN (${selectedFeatureIds.join(',')})`;
+      query.outFields = ["*"];
+      
+      const results = await geoJsonLayer.queryFeatures(query);
+      const selectedFeatures = results.features;
+      
       // Create a popup window with HTML content for report data
       const reportWindow = window.open('', '_blank', 'width=800,height=600');
       
@@ -253,12 +335,13 @@ const PolygonSelection = ({ map, view, geoJsonLayer }) => {
       reportWindow.document.write(htmlContent);
       reportWindow.document.close();
       
+      console.log("Report generated successfully");
     } catch (error) {
       console.error("Error generating report:", error);
       alert("There was an error generating the report. Please try again.");
     }
-  };
-  
+  }, [geoJsonLayer, selectedFeatureIds]);
+
   return (
     <div style={{ position: "absolute", bottom: "30px", left: "20px", zIndex: 1000, display: "flex", gap: "10px" }}>
       <button
@@ -293,7 +376,7 @@ const PolygonSelection = ({ map, view, geoJsonLayer }) => {
         </button>
       )}
       
-      {selectedFeatures.length > 0 && (
+      {selectedFeatureIds.length > 0 && (
         <button
           onClick={generateReport}
           style={{
@@ -306,7 +389,7 @@ const PolygonSelection = ({ map, view, geoJsonLayer }) => {
             fontWeight: "bold"
           }}
         >
-          Generate Report ({selectedFeatures.length})
+          Generate Report ({selectedFeatureIds.length})
         </button>
       )}
     </div>
