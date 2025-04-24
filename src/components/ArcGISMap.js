@@ -19,7 +19,7 @@ import {
 async function getSheetData() {
   // Poverty CSV remains unchanged
   const sheetUrl =
-    "https://docs.google.com/spreadsheets/d/e/2PACX-1vTuVsdCcxjO9B4eUn8RornEhC061GRbybSbNlgCEXNuBNTPhPyybN5Yn00kfhmmTAeCmtIZ-hsNrxH4/pub?output=csv";
+    "https://docs.google.com/spreadsheets/d/e/2PACX-1vR2x0Lik-Flp1e9x-BL2Lrz-bt1lBnmfjyq-xaJre8U3nb-RmRRHHqZ5XyMczrfaA-UJDEmsMhBAJ_7/pub?output=csv";
   try {
     const response = await axios.get(sheetUrl);
     const parsed = Papa.parse(response.data, { 
