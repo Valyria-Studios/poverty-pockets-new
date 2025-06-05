@@ -134,7 +134,7 @@ const ArcGISMap = () => {
     }).catch(console.error);
 
     // Fetch census data
-    const apiKey = process.env.REACT_APP_CENSUS_API_KEY;
+    ;const apiKey = process.env.REACT_APP_CENSUS_API_KEY; 
     if (apiKey) {
       // Fetch census tract data
       fetchCensusTractsData(apiKey)

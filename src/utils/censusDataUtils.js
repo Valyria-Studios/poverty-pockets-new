@@ -1,4 +1,3 @@
-// src/utils/censusDataUtils.js
 import axios from "axios";
 
 // Base URL for Census API
@@ -6,30 +5,21 @@ const CENSUS_API_BASE = "https://api.census.gov/data";
 
 /**
  * Normalize a Census Tract GEOID to ensure consistent format.
- * @param {string} geoid - The GEOID to normalize
- * @returns {string} Normalized GEOID
  */
 export function normalizeTractGeoid(geoid) {
   if (!geoid) return null;
   
-  // Convert to string in case it's a number
   let normalizedGeoid = String(geoid);
-  
-  // Remove any non-numeric characters (like decimal points)
   normalizedGeoid = normalizedGeoid.replace(/\D/g, '');
   
-  // Remove '14000US' prefix if present
   if (normalizedGeoid.startsWith('14000')) {
     normalizedGeoid = normalizedGeoid.substring(5);
   }
   
-  // Ensure it's 11 digits (standard format for tract GEOIDs)
-  // If shorter, pad with leading zeros
   while (normalizedGeoid.length < 11) {
     normalizedGeoid = '0' + normalizedGeoid;
   }
   
-  // If longer than 11 digits, truncate to the first 11
   if (normalizedGeoid.length > 11) {
     normalizedGeoid = normalizedGeoid.substring(0, 11);
   }
@@ -39,24 +29,17 @@ export function normalizeTractGeoid(geoid) {
 
 /**
  * Normalize a ZIP code to ensure consistent format.
- * @param {string|number} zipCode - The ZIP code to normalize
- * @returns {string} Normalized ZIP code
  */
 export function normalizeZipCode(zipCode) {
   if (!zipCode) return null;
   
-  // Convert to string in case it's a number
   let normalizedZip = String(zipCode);
-  
-  // Remove any non-numeric characters
   normalizedZip = normalizedZip.replace(/\D/g, '');
   
-  // Standard ZIP codes are 5 digits, ensure it's 5 digits
   while (normalizedZip.length < 5) {
     normalizedZip = '0' + normalizedZip;
   }
   
-  // Take only the first 5 digits if it's a ZIP+4
   if (normalizedZip.length > 5) {
     normalizedZip = normalizedZip.substring(0, 5);
   }
@@ -66,23 +49,15 @@ export function normalizeZipCode(zipCode) {
 
 /**
  * Process census data to ensure consistent key format
- * @param {Object} censusData - Raw census data object
- * @param {Function} normalizeFunction - Function to normalize keys
- * @returns {Object} Processed census data with normalized keys
  */
 function processCensusData(censusData, normalizeFunction) {
   const processed = {};
   
-  // Iterate through all keys in the original data
   Object.keys(censusData).forEach(key => {
-    // Normalize the key
     const normalizedKey = normalizeFunction(key);
     if (normalizedKey) {
-      // Add the data under the normalized key
       processed[normalizedKey] = censusData[key];
       
-      // If the normalized key is different from the original,
-      // also keep the data under the original key for flexibility
       if (normalizedKey !== key) {
         processed[key] = censusData[key];
       }
@@ -93,54 +68,70 @@ function processCensusData(censusData, normalizeFunction) {
 }
 
 /**
- * Fetches census data for multiple census tracts in batch
- * @param {string} apiKey - Census API key
- * @returns {Promise<Object>} - Promise resolving to a map of GEOIDs to census data
+ * FIXED: Fetches census data for multiple census tracts in batch
  */
 export const fetchCensusTractsData = async (apiKey) => {
-  if (!apiKey) {
-    console.error("Census API key is required");
+  if (!apiKey || apiKey.trim() === '') {
+    console.error("❌ Census API key is missing!");
     return {};
   }
 
   try {
-    console.log("Fetching Census tract data...");
+    console.log("✅ Census API key found, length:", apiKey.length);
+    console.log("🔍 Fetching Census tract data...");
     
-    // Population count (Total Population) - from P1 dataset
-    const populationUrl = `${CENSUS_API_BASE}/2020/dec/pl?get=P1_001N&for=tract:*&in=state:06&key=${apiKey}`;
+    // FIXED URLs - removed problematic characters and simplified
+    // Population count (Total Population) - 2020 Decennial Census
+    const populationUrl = `${CENSUS_API_BASE}/2020/dec/pl?get=NAME,P1_001N&for=tract:*&in=state:06&key=${apiKey}`;
     
-    // American Community Survey data for:
-    // - Employment Rate (DP03_0004PE)
-    // - Total Households (DP02_0001E)
-    // - Median Household Income (S1901_C01_012E)
-    const acsUrl = `${CENSUS_API_BASE}/2021/acs/acs5/profile?get=DP03_0004PE,DP02_0001E&for=tract:*&in=state:06&key=${apiKey}`;
-    const incomeUrl = `${CENSUS_API_BASE}/2021/acs/acs5/subject?get=S1901_C01_012E&for=tract:*&in=state:06&key=${apiKey}`;
+    // Employment Rate and Total Households - 2022 ACS 5-year (more recent data)
+    const acsUrl = `${CENSUS_API_BASE}/2022/acs/acs5/profile?get=NAME,DP03_0004PE,DP02_0001E&for=tract:*&in=state:06&key=${apiKey}`;
     
-    // Parallel requests to improve performance
+    // Median Household Income - 2022 ACS 5-year Subject tables
+    const incomeUrl = `${CENSUS_API_BASE}/2022/acs/acs5/subject?get=NAME,S1901_C01_012E&for=tract:*&in=state:06&key=${apiKey}`;
+    
     console.log("Sending Census API requests...");
-    const [populationRes, acsRes, incomeRes] = await Promise.all([
-      axios.get(populationUrl),
-      axios.get(acsUrl),
-      axios.get(incomeUrl)
-    ]);
+    console.log("Population URL (key hidden):", populationUrl.replace(apiKey, 'API_KEY'));
+    console.log("ACS URL (key hidden):", acsUrl.replace(apiKey, 'API_KEY'));
+    console.log("Income URL (key hidden):", incomeUrl.replace(apiKey, 'API_KEY'));
+    
+    // Make requests with proper error handling
+    const requests = [
+      axios.get(populationUrl).catch(err => {
+        console.error("Population request failed:", err.response?.status, err.response?.data);
+        return { data: [] };
+      }),
+      axios.get(acsUrl).catch(err => {
+        console.error("ACS request failed:", err.response?.status, err.response?.data);
+        return { data: [] };
+      }),
+      axios.get(incomeUrl).catch(err => {
+        console.error("Income request failed:", err.response?.status, err.response?.data);
+        return { data: [] };
+      })
+    ];
+    
+    const [populationRes, acsRes, incomeRes] = await Promise.all(requests);
     
     console.log("Received Census API responses, processing data...");
+    console.log("Population response length:", populationRes.data?.length || 0);
+    console.log("ACS response length:", acsRes.data?.length || 0);
+    console.log("Income response length:", incomeRes.data?.length || 0);
     
     // Process population data
     const populationData = {};
     if (populationRes.data && populationRes.data.length > 1) {
-      // Get header indices
       const popHeaders = populationRes.data[0];
       const p1001nIdx = popHeaders.indexOf("P1_001N");
       const stateIdx = popHeaders.indexOf("state");
       const countyIdx = popHeaders.indexOf("county");
       const tractIdx = popHeaders.indexOf("tract");
       
-      // Process rows (skip header row)
+      console.log("Population headers:", popHeaders);
+      
       for (let i = 1; i < populationRes.data.length; i++) {
         const row = populationRes.data[i];
         if (row && row.length === popHeaders.length) {
-          // Create GEOID in same format as GeoJSON: STATE+COUNTY+TRACT
           const geoid = row[stateIdx] + row[countyIdx] + row[tractIdx];
           populationData[geoid] = {
             P1_001N: row[p1001nIdx]
@@ -152,7 +143,6 @@ export const fetchCensusTractsData = async (apiKey) => {
     // Process ACS data (employment and households)
     const acsData = {};
     if (acsRes.data && acsRes.data.length > 1) {
-      // Get header indices
       const acsHeaders = acsRes.data[0];
       const empRateIdx = acsHeaders.indexOf("DP03_0004PE");
       const householdsIdx = acsHeaders.indexOf("DP02_0001E");
@@ -160,7 +150,8 @@ export const fetchCensusTractsData = async (apiKey) => {
       const countyIdx = acsHeaders.indexOf("county");
       const tractIdx = acsHeaders.indexOf("tract");
       
-      // Process rows (skip header row)
+      console.log("ACS headers:", acsHeaders);
+      
       for (let i = 1; i < acsRes.data.length; i++) {
         const row = acsRes.data[i];
         if (row && row.length === acsHeaders.length) {
@@ -176,14 +167,14 @@ export const fetchCensusTractsData = async (apiKey) => {
     // Process Income data
     const incomeData = {};
     if (incomeRes.data && incomeRes.data.length > 1) {
-      // Get header indices
       const incHeaders = incomeRes.data[0];
       const incomeIdx = incHeaders.indexOf("S1901_C01_012E");
       const stateIdx = incHeaders.indexOf("state");
       const countyIdx = incHeaders.indexOf("county");
       const tractIdx = incHeaders.indexOf("tract");
       
-      // Process rows (skip header row)
+      console.log("Income headers:", incHeaders);
+      
       for (let i = 1; i < incomeRes.data.length; i++) {
         const row = incomeRes.data[i];
         if (row && row.length === incHeaders.length) {
@@ -198,14 +189,12 @@ export const fetchCensusTractsData = async (apiKey) => {
     // Merge all datasets
     const mergedData = {};
     
-    // Create a set of all GEOIDs from all datasets
     const allGeoids = new Set([
       ...Object.keys(populationData),
       ...Object.keys(acsData),
       ...Object.keys(incomeData)
     ]);
     
-    // Merge data for each GEOID
     allGeoids.forEach(geoid => {
       mergedData[geoid] = {
         ...(populationData[geoid] || {}),
@@ -214,12 +203,12 @@ export const fetchCensusTractsData = async (apiKey) => {
       };
     });
     
-    console.log(`Raw census data fetched for ${Object.keys(mergedData).length} census tracts`);
+    console.log(`✅ Raw census data fetched for ${Object.keys(mergedData).length} census tracts`);
     
     // Process the data to ensure consistent key format
     const processedData = processCensusData(mergedData, normalizeTractGeoid);
     
-    console.log(`Processed census data for ${Object.keys(processedData).length} census tracts`);
+    console.log(`✅ Processed census data for ${Object.keys(processedData).length} census tracts`);
     
     // Log a sample of the data
     const sampleKeys = Object.keys(processedData).slice(0, 3);
@@ -230,39 +219,50 @@ export const fetchCensusTractsData = async (apiKey) => {
     return processedData;
     
   } catch (error) {
-    console.error("Error fetching census data:", error);
+    console.error("❌ Error fetching census data:", error);
+    if (error.response) {
+      console.error("Response status:", error.response.status);
+      console.error("Response data:", error.response.data);
+    }
     return {};
   }
 };
 
 /**
- * Fetches ZIP Code Tabulation Area (ZCTA) data from the Census API
- * @param {string} apiKey - Census API key
- * @returns {Promise<Object>} - Promise resolving to a map of ZIP codes to census data
+ * FIXED: Fetches ZIP Code Tabulation Area (ZCTA) data from the Census API
  */
 export const fetchZipcodeData = async (apiKey) => {
-  if (!apiKey) {
-    console.error("Census API key is required");
+  if (!apiKey || apiKey.trim() === '') {
+    console.error("❌ Census API key is missing!");
     return {};
   }
 
   try {
-    console.log("Fetching ZIP code data...");
+    console.log("🔍 Fetching ZIP code data...");
     
-    // Population count (Total Population)
-    const populationUrl = `${CENSUS_API_BASE}/2020/dec/pl?get=P1_001N&for=zip%20code%20tabulation%20area:*&key=${apiKey}`;
+    // FIXED URLs for ZIP code data
+    const populationUrl = `${CENSUS_API_BASE}/2020/dec/pl?get=NAME,P1_001N&for=zip%20code%20tabulation%20area:*&key=${apiKey}`;
+    const acsUrl = `${CENSUS_API_BASE}/2022/acs/acs5/profile?get=NAME,DP03_0004PE,DP02_0001E&for=zip%20code%20tabulation%20area:*&key=${apiKey}`;
+    const incomeUrl = `${CENSUS_API_BASE}/2022/acs/acs5/subject?get=NAME,S1901_C01_012E&for=zip%20code%20tabulation%20area:*&key=${apiKey}`;
     
-    // American Community Survey data
-    const acsUrl = `${CENSUS_API_BASE}/2021/acs/acs5/profile?get=DP03_0004PE,DP02_0001E&for=zip%20code%20tabulation%20area:*&key=${apiKey}`;
-    const incomeUrl = `${CENSUS_API_BASE}/2021/acs/acs5/subject?get=S1901_C01_012E&for=zip%20code%20tabulation%20area:*&key=${apiKey}`;
-    
-    // Parallel requests
     console.log("Sending ZIP code data requests...");
-    const [populationRes, acsRes, incomeRes] = await Promise.all([
-      axios.get(populationUrl),
-      axios.get(acsUrl),
-      axios.get(incomeUrl)
-    ]);
+    
+    const requests = [
+      axios.get(populationUrl).catch(err => {
+        console.error("ZIP Population request failed:", err.response?.status, err.response?.data);
+        return { data: [] };
+      }),
+      axios.get(acsUrl).catch(err => {
+        console.error("ZIP ACS request failed:", err.response?.status, err.response?.data);
+        return { data: [] };
+      }),
+      axios.get(incomeUrl).catch(err => {
+        console.error("ZIP Income request failed:", err.response?.status, err.response?.data);
+        return { data: [] };
+      })
+    ];
+    
+    const [populationRes, acsRes, incomeRes] = await Promise.all(requests);
     
     console.log("Received ZIP code API responses, processing data...");
     
@@ -325,14 +325,12 @@ export const fetchZipcodeData = async (apiKey) => {
     // Merge datasets
     const mergedData = {};
     
-    // Create a set of all ZIP codes from all datasets
     const allZipCodes = new Set([
       ...Object.keys(populationData),
       ...Object.keys(acsData),
       ...Object.keys(incomeData)
     ]);
     
-    // Merge data for each ZIP code
     allZipCodes.forEach(zipCode => {
       mergedData[zipCode] = {
         ...(populationData[zipCode] || {}),
@@ -341,14 +339,12 @@ export const fetchZipcodeData = async (apiKey) => {
       };
     });
     
-    console.log(`Raw ZIP code data fetched for ${Object.keys(mergedData).length} ZIPs`);
+    console.log(`✅ Raw ZIP code data fetched for ${Object.keys(mergedData).length} ZIPs`);
     
-    // Process the data to ensure consistent key format
     const processedData = processCensusData(mergedData, normalizeZipCode);
     
-    console.log(`Processed ZIP code data for ${Object.keys(processedData).length} ZIPs`);
+    console.log(`✅ Processed ZIP code data for ${Object.keys(processedData).length} ZIPs`);
     
-    // Log a sample of the data
     const sampleKeys = Object.keys(processedData).slice(0, 3);
     sampleKeys.forEach(key => {
       console.log(`Sample data for ZIP ${key}:`, processedData[key]);
@@ -357,7 +353,7 @@ export const fetchZipcodeData = async (apiKey) => {
     return processedData;
     
   } catch (error) {
-    console.error("Error fetching ZIP code census data:", error);
+    console.error("❌ Error fetching ZIP code census data:", error);
     return {};
   }
 };
